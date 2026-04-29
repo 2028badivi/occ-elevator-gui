@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OCC Elevator Control Panel</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <section class="panel">
+      <p class="eyebrow">OCC Testbed Final Version GUI</p>
+      <h1>OCC Elevator Control Panel</h1>
+      <div class="floor-display" id="floorDisplay">Floor 1</div>
+      <p class="status" id="status">Stopped at floor 1</p>
+
+      <div class="button-grid">
+        <button class="floor-button" data-floor="4">Floor 4</button>
+        <button class="floor-button" data-floor="3">Floor 3</button>
+        <button class="floor-button" data-floor="2">Floor 2</button>
+        <button class="floor-button active" data-floor="1">Floor 1</button>
+      </div>
+
+      <div class="controls">
+        <button class="home-button" id="homeButton">Return Home</button>
+        <button class="stop-button" id="stopButton">Emergency Stop</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
