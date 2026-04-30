@@ -8,4 +8,8 @@ The GUI should render in its own window. Please be aware of some potential versi
 
 Install GUIzero, which is a framework for the Graphical User Interface (GUI) that I used:
 
-./.venv/bin/python elevator_gui.py
+sudo apt install guizero
+
+or you can just do
+
+pip3 install guizero
