@@ -1,0 +1,247 @@
+
+OpenCyberCity Testbed Elevator Subsystem
+401 West Main Street
+Monroe Park Campus, VCU, Richmond, Virginia
+Proposal Submitted by Bhavesh Adivi
+Elevator GUI Architecture
+Last updated April 2
+PURPOSE
+This document provides a brief overview of the GUI architecture for a Raspberry Pi control of the    elevator subsystem in the OpenCyberCity testbed. The goal is to create a touch screen interface that is simple to use and would be relatively convenient to extend and expand upon later without rewriting any of the logic.  The current code and architecture plan only include the full frontend source code and do not implement the backend functionality at the moment. It currently uses placeholder functions that can be swapped out for the real backend movement functionality when it is ready. 
+GOALS
+The GUI should work Independent of the number of floors there are. It should work with four floors or five floors, which opens up the opportunity to expand to more floors in the future. In other words, adding an extra floor should only involve updating one specific variable, and not changing the layout code.  In addition, the frontend is designed to maintain flexibility in the future for feature iterations.
+Architecture
+The code is currently split into two parts:
+1. The frontend, which is currently implemented below
+2. The backend, which is now interfaced through stub (placeholder) functions that simulate hardware interaction (Raspberry Pi GPIO) until physical connectivity is finalized.
+
+
+Section of the code
+Features and Components
+Backend (stub functions)
+Basic variables for tracking elevator status and condition, placeholder (stub) functions
+GUI
+Interfaces with stub functions (hardware-ready)
+Guizero widgets
+Three navigation-ready panels
+Functions that run when a button is pressed (example: tapping Floor 3 button in GUI triggers the go_to_floor function)
+
+
+GUI Panels
+The app currently has three panels, but only one is fully visible at any given time. The show_panel() function hides all of the panels and then shows the one requested by the method argument. The three panels are described below. 
+ 
+Panel
+Contents
+Main panel
+Includes:
+Floor indicator strip (Implemented)
+Floor select buttons in GUI
+Status text
+Home button
+Programming Panel
+Checkboxes to pick a stop sequence
+A run button
+Settings Panel
+Includes:
+Speed slider
+Placeholder for future options
+
+
+
+
+
+Main Panel
+The main panel is going to be the default view when the app opens. It shows only one button per floor and a simple status text line that shows the current floor it is on. It will update each time that the elevator moves a floor. Pressing a floor button in the GUI calls the "go to floor" function, and it will update the status text. For the future, this updating functionality would take into account sensor readings such as an infrared sensor on each floor to sense presence of the car or a distance (ultrasonic) sensor at the bottom of the shaft to calculate distance and determine current floor. Other ideas are currently being drafted and the frontend code would remain compatible with any as long as a separate function is employed to handle the floor determination to avoid any potential inconsistencies between the theoretical floor level and the actual floor level.
+
+
+Programming Panel
+This lets the user define a sequence of floors to visit in order. The user checks the floors they want to visit and presses "Run", and the elevator visits them in ascending order. 
+
+Settings Panel
+This panel holds a speed slider (0-100%) that controls the motor speed. The current implementation uses stub functions to simulate setting the PWM value on the motor controller.
+
+
+Source code
+NOTE: Backend stub functions were omitted in the below source code but will be included in a later version. Also, the output isn’t currently shown here as I have attempted to run the Python file via terminal, however there are some hurdles in guizero installation that are preventing me from sharing the output GUI directly. However, as seen in a general online tutorial, the GUI should just contain the title at the top, with the 4 rendered buttons in the middle and the status text as well as the home button below it. In addition, the current code does not have the Settings and the Programming Panel implemented yet, as these are currently in planning for optimal usage and compatibility with current and future feature iterations.
+elevator_gui.py
+# imports from guizero
+from guizero import App, Box, Text, PushButton, CheckBox, Slider
+# configuration and the variables to track the state of the elevator system
+floor_count = 4 
+start_floor = 1   # the elevator would start here
+DEFAULT_SPEED = 50    # the speed can be set to 0-100
+current_floor   = start_floor
+motor_speed     = DEFAULT_SPEED
+is_running      = False   # i made it so that this would only be true while a sequence is running
+
+#stub functions are below
+def stub_go_to_floor(floor: int) -> None:
+    """
+    STUB FUNCTION: this would just drive the motor until the elevator car would reach "floor"
+    """
+    print(f"[STUB] go_to_floor({floor}) called ~ motor would drive to floor {floor}")
+
+def stub_home() -> None:
+    """
+    STUB FUNCTION: drive car downward until the bottom limit switch actives
+    """
+    print("[STUB] home() called ~ the motor would now just drive down to limit switch")
+
+def stub_get_current_floor() -> int:
+    """
+    STUB FUNCTION: return the value for the actual floor number from sensors
+    """
+    return current_floor
+
+def stub_run_sequence(floors: list) -> None:
+    """
+    STUB FUNCTION: visit each floor in `floors` list in order
+    """
+    print(f"[STUB] run_sequence({floors}) called")
+
+def stub_set_speed(value: int) -> None:
+    """
+    STUB FUNCTION: pass the speed value from 0-100 to the motor controller
+    """
+    print(f"[STUB] set_speed({value}) called ~ motor PWM set to {value}%")
+
+def stub_stop() -> None:
+    """
+    STUB FUNCTION: immediately cuts the power to the motor
+    """
+    print("[STUB] stop() called ~ motor power cut immediately")
+
+# frontend logic functions
+def go_to_floor(floor: int) -> None:
+    global current_floor
+    current_floor = floor
+    stub_go_to_floor(floor)
+    status_text.value = f"Stopped at floor {floor}"
+    _refresh_indicator()
+
+def home() -> None:
+    global current_floor
+    stub_home()
+    current_floor = start_floor
+    status_text.value = f"Stopped at floor {start_floor}"
+    _refresh_indicator()
+
+def emergency_stop() -> None:
+    stub_stop()
+    status_text.value = "EMERGENCY STOP — motor halted"
+
+def run_sequence() -> None:
+    selected=[]
+    for floor_num,cb in floor_checkboxes.items(): 
+        if cb.value==1: 
+            selected.append(floor_num)
+    if not selected:
+        prog_status.value="No floors selected."
+        return
+    selected.sort()
+    prog_status.value=f"currently running: {selected}"
+    stub_run_sequence(selected)
+    global current_floor
+    current_floor=selected[-1]
+    status_text.value=f"Stopped at floor {current_floor}"
+    _refresh_indicator()
+
+def on_speed_change(value)->None:
+    global motor_speed
+    motor_speed=int(value)
+    speed_label.value=f"speed: {motor_speed}%"
+    stub_set_speed(motor_speed)
+
+def _refresh_indicator() -> None:
+    for floor_num, box in indicator_boxes.items(): 
+        if floor_num == current_floor: box.bg = "#2d6a4f"   
+        else: box.bg = "#3a3a3a"
+
+def show_panel(panel_name: str) -> None:
+    prog_panel.hide()
+    main_panel.hide()
+    settings_panel.hide()
+    if panel_name == "main": main_panel.show()
+    elif panel_name == "prog": prog_panel.show()
+    elif panel_name == "settings": settings_panel.show()
+
+# UI Layout
+app=App(title="OCC Testbed Elevator GUI", width=420, height=480, bg="#1e1e1e")
+nav_box =Box(app,width="fill", height=70, layout="grid")
+PushButton(nav_box,text="Main", grid=[0, 0], width=10, command=lambda:show_panel("main"))
+PushButton(nav_box,text="Program", grid=[1, 0], width=10, command=lambda: show_panel("prog"))
+PushButton(nav_box,text="Settings", grid=[2, 0], width=10, command=lambda: show_panel("settings"))
+
+main_panel=Box(app,width="fill",height="fill", layout="auto")
+indicator_strip=Box(main_panel, width=220, height=30, layout="grid")
+indicator_boxes={}
+for i in range(1, floor_count+1):
+    b=Box(indicator_strip,width=50,height=25,grid=[i-1, 0])
+    b.bg = "#2d6a4f" if i == start_floor else "#3a3a3a"
+    Text(b, text=f"F{i}", size=9, color="white")
+    indicator_boxes[i] = b
+
+Text(main_panel, text="")
+for i in range(floor_count, 0, -1):
+    PushButton(main_panel,text=f"Floor {i}",width=20,command=lambda f=i: go_to_floor(f))
+
+Text(main_panel ,text="")
+status_text=Text(main_panel,text=f"Stopped at floor {start_floor}", color="white", size=11)
+Text(main_panel, text="")
+PushButton(main_panel,text="Home",width=20,command=home)
+Text(main_panel, text="")
+PushButton(main_panel,text="Emergency Stop", width=20,command=emergency_stop)
+
+prog_panel=Box(app,width="fill",height="fill",layout="auto")
+Text(prog_panel,text="Pick the stop sequence:",color="white",size=11)
+floor_checkboxes = {}
+for i in range(1,floor_count+1):
+    cb=CheckBox(prog_panel,text=f"Floor {i}")
+    cb.text_color="white"
+    floor_checkboxes[i]=cb
+PushButton(prog_panel, text="Run sequence",width=20,command=run_sequence)
+prog_status =Text(prog_panel,text="",color="#aaaaaa",size=10)
+prog_panel.hide()
+
+settings_panel=Box(app,width="fill",height="fill",layout="auto")
+Text(settings_panel,text="Motor Speed", color="white", size=11)
+speed_slider=Slider(settings_panel,start=0,end=100,width=300,command=on_speed_change)
+speed_slider.value = DEFAULT_SPEED
+speed_label = Text(settings_panel,text=f"Speed: {DEFAULT_SPEED}%",color="#aaaaaa",size=10)
+settings_panel.hide()
+
+stub_set_speed(DEFAULT_SPEED)
+app.display()
+
+
+
+Directions to test code
+The current source code uses guizero, so it is important that it’s installed onto the Raspberry Pi:
+Bash commands:
+	sudo apt install python3-guizero
+	python3 elevator_gui.py
+Next steps
+Next steps include implementing the backend, which will interface with the motor controller over GPIO. Once that is ready, go_to_floor() function and the home() function gets replaced with actual calls, and the GUI will work without any other changes. After that, the programming panel sequence logic needs to be wired up to the backend so that it can execute multi-floor runs in order. 
+
+To extend the GUI, we would basically have to add a fifth floor. Then we can just change the floor count variable from 4 to 5, and nothing else changes.
+
+In order to connect the back end to the real back end, we would replace the body of the "go to floor" and the "home" method with a link to the other external back end functions that would actually interface with the GPIO and the real motor commands or the API calls or any back end functionality is to be determined so that the GUI code stays the same. 
+
+
+
+
+
+Potential backend functions
+NOTE: these largely depend on the implemented physical design for the elevator subsystem, however the method descriptions below operate off of expected movements and/or functionality.
+go_to_floor(floor)
+This would drive the motor until the car reaches the target floor as specified in the argument. The GUI already calls this one. However, the backend functionality would need to be implemented inside of the method. 
+
+home()
+This one would drive the car downwards until the bottom limit switch triggers, and then it'll reset the floor counter to 1. The GUI already calls this one too, however, we need to make sure that this would interface with the real GPIO in the back and functionality. 
+get_current_floor()
+This would read the current position of the floor from the motor controller (or other mechanism that would be planned for the hardware), and it would return the floor number. The GUI would call this periodically to check the floor number and to keep the status text accurate during the movement. 
+run_sequence(floors)
+This would take a list of floors and visit them in order. This is what the programming panel run button would call once that panel is actually wired up to the hardware.
+set_speed(value)
+This would take the speed value from the settings panel slider and pass it onto the motor controller. Right now, the slider updates a variable that nothing reads, so for the future, we need to be able to connect this to the backend. 
+stop()
+This button would immediately cut the motor power and halt the car wherever it is, operating as an immediate resort to stop the car movement. A “Stop” button could be added to a GUI frontend if needed in the future. 

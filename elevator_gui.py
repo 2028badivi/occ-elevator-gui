@@ -1,4 +1,7 @@
 # imports from guizero
+import time
+from sqlite3 import Time
+
 from guizero import App, Box, Text, PushButton, CheckBox, Slider
 # configuration and the variables to track the state of the elevator system, and these would be used and updated by the stub functions and the frontend logic functions to track of the current state of the elevator system in the GUI, and then these would also be used to reflect the state in the GUI elements
 floor_count = 4 
@@ -7,8 +10,7 @@ DEFAULT_SPEED = 50    # the speed can be set to 0-100
 current_floor   = start_floor
 motor_speed     = DEFAULT_SPEED
 is_running      = False   # i made it so that this would only be true while a sequence is running
-
-#stub functions are below
+#i included the stub functions are below
 def stub_go_to_floor(floor: int) -> None:
     """
     STUB FUNCTION: this would just drive the motor until the elevator car would reach "floor"
@@ -52,6 +54,7 @@ def go_to_floor(floor: int) -> None:
     """I made this so that it would be called when a floor button is tapped."""
     global current_floor
     current_floor = floor
+    
     stub_go_to_floor(floor)
     status_text.value = f"Stopped at floor {floor}"
     _refresh_indicator()
@@ -93,8 +96,21 @@ def on_speed_change(value)->None:
     speed_label.value=f"speed: {motor_speed}%"
     stub_set_speed(motor_speed)
 def _refresh_indicator() -> None:
+    # Calculate delay between floors based on motor speed
+    # Higher speed = shorter delay, lower speed = longer delay
+    if motor_speed > 0:
+        
+
+        base_delay = 0.5 
+        floor_delay = base_delay * (100 - motor_speed) / 100 + 0.05
+    else:
+        floor_delay = 2.0
+    
     for floor_num, box in indicator_boxes.items(): 
-        if floor_num == current_floor: box.bg = "#2d6a4f"   
+        if floor_num == current_floor: 
+            box.bg = "#2d6a4f"   
+   
+            time.sleep(floor_delay)
         else: box.bg = "#3a3a3a"   # I chose this to represent that it would be inactive in state, in other words represented as dark
 def show_panel(panel_name: str) -> None:
     """This wouild hide all of hte panels nad then show the one that was requested"""
@@ -104,6 +120,9 @@ def show_panel(panel_name: str) -> None:
     if panel_name == "main": main_panel.show()
     elif panel_name == "prog": prog_panel.show()
     elif panel_name == "settings": settings_panel.show()
+
+
+
 #UI (FROM GUI ZERO) and this is where the actual GUI layout and design is created, and then the functions above are called when the buttons/sliders are interacted with by the user.
 app=App(title="OCC Testbed Final Version GUI", width=420, height=480, bg="#1e1e1e") # this was adjusted from trial and error but can be changed layer for the dimensions/selection
 nav_box =Box(app,width="fill", height=70, layout="grid") # this was adjusted from trial and error but can be changed layer for the dimensions/selection
