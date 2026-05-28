@@ -1,10 +1,15 @@
 Run:
 
 ```bash
+
+
 gh repo clone https://github.com/2028badivi/occ-elevator-gui'
 
-source /Users/<USER_ID>/<PATH_TO_CLONED_FOLDER>/.venv/bin/activate
+cd occ-elevator-gui
+python3 -m venv .venv
 
+
+source /Users/<USER_ID>/<PATH_TO_CLONED_FOLDER>/.venv/bin/activate
 ./.venv/bin/python elevator_gui.py
 
 ```
