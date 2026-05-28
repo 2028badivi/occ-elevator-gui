@@ -210,7 +210,7 @@ def draw_simulation() -> None:
     if any_sensor_active:
         
         sensor_status_light.bg = "#00FF66"
-        sensor_status_label.value = "active sensor"
+        sensor_status_label.value = "the sensor is active"
         sensor_status_label.text_color = "#00FF66"
 
 
