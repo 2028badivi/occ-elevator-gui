@@ -1,15 +1,195 @@
+
+
+
 # imports from guizero
 import time
-from sqlite3 import Time
 
 from guizero import App, Box, Text, PushButton, CheckBox, Slider, Drawing
-# configuration and the variables to track the state of the elevator system, and these would be used and updated by the stub functions and the frontend logic functions to track of the current state of the elevator system in the GUI, and then these would also be used to reflect the state in the GUI elements
-floor_count = 4 
-start_floor = 1   # the elevator would start here
-DEFAULT_SPEED = 50    # the speed can be set to 0-100
-current_floor   = start_floor
-motor_speed     = DEFAULT_SPEED
-is_running      = False   # i made it so that this would only be true while a sequence is running
+
+try:
+    from gpiozero import LED, MCP3008, Motor
+    from gpiozero.pins.pigpio import PiGPIOFactory
+    GPIO_AVAILABLE = True
+except Exception:
+    GPIO_AVAILABLE = False
+
+
+
+
+
+start_floor = 1
+floor_count = 4
+DEFAULT_SPEED = 50
+current_floor = start_floor
+motor_speed = DEFAULT_SPEED
+is_running = False
+pot_voltage = 0.0
+
+
+
+# adc wiring and pinout
+#physical pins (pi) to the mcp3008 (ADC)
+#Pi MOSI  (GPIO10 physical 19) goes to MCP3008 DIN  pin 11
+#Pi MISO  (GPIO9  physical 21) goes to MCP3008 DOUT pin 10
+#Pi SCLK  (GPIO11 physical 23) goes to MCP3008 CLK  pin 12
+#Pi CE0   (GPIO8  physical 24) goes to MCP3008 CS   pin 13
+#Pi 3.3V  goes to MCP3008 VDD and VREF
+#Pi GND   goes to MCP3008 AGND and DGND
+
+
+
+ADC_VREF = 3.3
+MCP3008_POT_CHANNEL = 4 
+IR_SENSOR_CHANNELS = {1: 0, 2: 1, 3: 2, 4: 3}
+IR_DETECT_THRESHOLD = 0.35 #we weould need to calibrate this
+PINCHOMETER_THRESHOLDS = [ #also need to calibrate this too
+    (0.85, 4),
+    (0.60, 3),
+    (0.35, 2),
+    (0.00, 1),
+]
+
+# the motor H-bridge driver pins
+MOTOR_DRIVER_IN1 = 17
+MOTOR_DRIVER_IN2 = 18
+FLOOR_LED_PINS = {1: 5, 2: 6, 3: 13, 4: 19}
+
+
+
+
+
+class HardwareController:
+    def __init__(self):
+
+
+
+
+        self.current_speed = DEFAULT_SPEED
+        self.target_floor = start_floor
+        self.last_target = None
+
+
+
+
+        self.is_gpio = GPIO_AVAILABLE
+        self.motor = None
+        self.pot = None
+        self.ir_sensors = {}
+        self.floor_leds = {}
+
+
+
+
+        if self.is_gpio:
+
+
+            try:
+                factory = PiGPIOFactory()
+                self.pot = MCP3008(channel=MCP3008_POT_CHANNEL, pin_factory=factory)
+                self.motor = Motor(forward=MOTOR_DRIVER_IN1, backward=MOTOR_DRIVER_IN2, pwm=True, pin_factory=factory,)
+
+
+
+                self.floor_leds = {floor: LED(pin, pin_factory=factory) for floor, pin in FLOOR_LED_PINS.items()}
+
+
+
+                self.ir_sensors = {floor: MCP3008(channel=channel, pin_factory=factory)
+                    for floor, channel in IR_SENSOR_CHANNELS.items()
+                }
+
+
+
+            except Exception as exc:
+
+                print("[the hardware] GPIO has failed to start :( :", exc)
+                self.is_gpio = False
+
+
+
+    def read_pinchometer_voltage(self) -> float:
+        if self.is_gpio and self.pot:
+            try: return float(self.pot.value) * ADC_VREF
+            except Exception: return pot_voltage
+        return pot_voltage
+
+
+
+    def get_floor_from_pinchometer(self, voltage: float) -> int:
+        for threshold, floor in PINCHOMETER_THRESHOLDS:
+            if voltage >= threshold:
+                return floor
+        return 1
+
+    def detect_floor_from_ir(self) -> int | None:
+        if not self.is_gpio:
+            return None
+        best_floor = None
+        best_reading = IR_DETECT_THRESHOLD
+        for floor, sensor in self.ir_sensors.items():
+            try:
+                reading = float(sensor.value)
+            except Exception:
+                reading = 0.0
+            if reading > best_reading:
+                best_reading = reading
+                best_floor = floor
+        return best_floor
+
+    def get_current_floor(self) -> int:
+        if not self.is_gpio:
+            return start_floor
+        ir_floor = self.detect_floor_from_ir()
+        if ir_floor is not None:
+            return ir_floor
+        voltage = self.read_pinchometer_voltage()
+        return self.get_floor_from_pinchometer(voltage)
+
+    def update_floor_leds(self, active_floor: int) -> None:
+        if not self.is_gpio: return
+        for floor, led in self.floor_leds.items(): led.value = floor == active_floor
+
+    def floor_presence(self) -> dict:
+        presence = {}
+        if self.is_gpio:
+            for floor, sensor in self.ir_sensors.items():
+                try:
+                    presence[floor] = float(sensor.value) >= IR_DETECT_THRESHOLD
+                except Exception:
+                    presence[floor] = False
+        else:
+            presence = {floor: False for floor in IR_SENSOR_CHANNELS}
+        return presence
+
+    def move_toward(self, target_floor: int, speed: int) -> None:
+        if not self.is_gpio or self.motor is None:
+            return
+        current = self.get_floor_from_pinchometer(self.read_pinchometer_voltage())
+        duty = max(0.0, min(1.0, speed / 100.0))
+        if target_floor > current:
+            self.motor.forward(duty)
+        elif target_floor < current:
+            self.motor.backward(duty)
+        else:
+            self.stop()
+        self.last_target = target_floor
+
+    def stop(self) -> None:
+        if not self.is_gpio:
+            return
+        if self.motor is not None:
+            self.motor.stop()
+        self.last_target = None
+
+
+#to init
+hardware = HardwareController()
+
+
+
+
+
+
 
 # here are the vars for the visual simuilation to   track the gliding and sensor state
 floor_coords={1: 320, 2: 240, 3: 160, 4: 80}    
@@ -36,39 +216,64 @@ def stub_go_to_floor(floor: int) -> None:
     STUB FUNCTION: this would just drive the motor until the elevator car would reach "floor"
     In the real implementation of the elevetor subsystem: send motor direction & run until floor sensor triggers.
     """
-    print(f"[STUB] go_to_floor({floor}) called ~ motor would drive to floor {floor}")
+    print(f"[HARDWARE] go_to_floor({floor}) called ~ target floor {floor}")
+    hardware.target_floor = floor
+    hardware.move_toward(floor, motor_speed)
+
 def stub_home() -> None:
     """
     STUB FUNCTION: This would be meant to drive car downward (vertical) until the bottom limit switch actives, and then it would reset counter to 1
     In the real implementation of the elevetor subsystem: it would just reverse the motor until limit_switch_bottom.is_pressed, and then
     reset encoder/counter to bottom floor 1.
     """
-    print("[STUB] home() called ~ the motor would now just drive down to limit switch")
+    print("[HARDWARE] home() called ~ moving toward floor 1")
+    hardware.target_floor = start_floor
+    hardware.move_toward(start_floor, motor_speed)
+
 def stub_get_current_floor() -> int:
     """
-    STUB FUNCTION: return the value for the actual floor number from sensors (IR or ultrasonic).
-    In the real implementation of the elevetor subsystem: it would just read GPIO sensor or encoder and return int floor number.
-    This would just return the tracked software state as a fallback while hardware is absent.
+    STUB FUNCTION: return the value for the actual floor number from sensors.
+    In the real implementation of the elevator subsystem: it would read IR floor beacons
+    and fallback to the pinchometer position reading.
     """
-    print(f"[STUB] get_current_floor() ~ this would just be returning software state: {current_floor}")
-    return current_floor # this is just a fallback to track the floor state in the GUI without any hardware link, in the real implementation after we connect to the hardware for the testbed, this would read from sensors/encoder instead
+    floor_from_ir = hardware.detect_floor_from_ir()
+    if floor_from_ir is not None:
+        print(f"[HARDWARE] get_current_floor() IR detected floor {floor_from_ir}")
+        return floor_from_ir
+
+    voltage = hardware.read_pinchometer_voltage()
+    actual_floor = hardware.get_floor_from_pinchometer(voltage)
+    print(
+        f"[HARDWARE] get_current_floor() pinchometer={voltage:.2f} V => floor {actual_floor}"
+    )
+    return actual_floor
+
 def stub_run_sequence(floors: list) -> None:
     """
     STUB FUNCTION: visit each floor in `floors` list in the order as selected
     In the real implementation of the elevetor subsystem: iterate and call go_to_floor for each and just waiting for
     arrival confirmation between each of the stops.
     """
-    print(f"[STUB] run_sequence({floors}) called ~ this would just visit floors in order")
+    print(f"[HARDWARE] run_sequence({floors}) called ~ starting sequence")
+    if floors:
+        hardware.target_floor = floors[0]
+        hardware.move_toward(floors[0], motor_speed)
+
 def stub_set_speed(value: int) -> None:
     """
     STUB FUNCTION: would pass the speed value from 0-100 to the motor controller for the Raspberry Pi.
     """
-    print(f"[STUB] set_speed({value}) called ~ motor PWM would now just be set to {value}%")
+    print(f"[HARDWARE] set_speed({value}) called ~ motor PWM would now just be set to {value}%")
+    hardware.current_speed = value
+    if hardware.target_floor is not None:
+        hardware.move_toward(hardware.target_floor, value)
+
 def stub_stop() -> None:
     """
     STUB FUNCTION: this would immediately cuts the power to the motor power (just an emergency stop)
     """
-    print("[STUB] stop() called ~ the motor power would now be cut immediately")
+    print("[HARDWARE] stop() called ~ the motor power would now be cut immediately")
+    hardware.stop()
  #frontend logic functions are below and these would primarily cal the GUI stub functoiojns that are not connected to the backend yet 
 def go_to_floor(floor: int) -> None:
     """I made this so that it would be called when a floor button is tapped."""
@@ -131,6 +336,7 @@ def emergency_stop() -> None:
     status_text.value = "EMERGENCY STOP, motor halted"
 
 
+#frontend gui code is below
 
 def run_sequence() -> None:
     
@@ -235,7 +441,7 @@ def draw_simulation() -> None:
     car_color = "#00bcd4" if abs(car_y - floor_coords[target_floor]) > 1.0 else "#2d6a4f"
     drawing.rectangle(x1, y1, x2, y2, color=car_color, outline=True, outline_color="white")
 
-
+ 
 
 
     # this is a simple direction indicator (with teh colors)
@@ -266,8 +472,17 @@ def glide_step() -> None:
     #the globals for status tracking of the car and stuffs
 
 
-    global car_y, current_floor, target_floor, sequence_mode, sequence_queue, pause_timer
+    global car_y, current_floor, target_floor, sequence_mode, sequence_queue, pause_timer, pot_voltage
     
+    # read sensor values from hardware
+    pot_voltage = hardware.read_pinchometer_voltage()
+
+    current_floor = hardware.get_current_floor()
+    hardware.update_floor_leds(current_floor)
+
+    floor_presence = hardware.floor_presence()
+
+
 
 
     if pause_timer > 0:
@@ -280,28 +495,27 @@ def glide_step() -> None:
         
     target_y = floor_coords[target_floor]
     
-
-
     if abs(car_y - target_y) > 1.0:
 
         if motor_speed > 0:
 
+            #just to make sure that it is avialable
+            if GPIO_AVAILABLE:
+                hardware.move_toward(target_floor, motor_speed)
+
             step = max(0.5, (motor_speed / 100.0) * 6.0)
 
             if car_y < target_y:
-
                 car_y += min(step, target_y - car_y)
-
             else:
-
                 car_y -= min(step, car_y - target_y)
 
-
     else:
+        hardware.stop()
         if current_floor != target_floor:
 
             current_floor = target_floor
-
+            
             status_text.value = f"Currently just stopped at floor {current_floor}"
             _refresh_indicator()
             
@@ -320,9 +534,18 @@ def glide_step() -> None:
                     sequence_mode = False
                     prog_status.value = ""
                     status_text.value = f"The elevator car has JUST stopped at floor {current_floor}"
-                    
-    draw_simulation()
 
+    any_sensor_active = any(floor_presence.values())
+    if any_sensor_active:
+        sensor_status_light.bg = "#00FF66"
+        sensor_status_label.value = "the sensor is active"
+        sensor_status_label.text_color = "#00FF66"
+    else:
+        sensor_status_light.bg = "#442222"
+        sensor_status_label.value = "inactive sensor"
+        sensor_status_label.text_color = "#aaaaaa"
+
+    draw_simulation()
 
 
 
@@ -475,5 +698,3 @@ app.repeat(16, glide_step)
 # this would finally render the app
 
 app.display()
-
-#im going to add the gpio code very soon but if i add that part then the gui would not compile/render because the code would be running on mac os and the pins are only connected to the pi whcih is not yet ready yet
