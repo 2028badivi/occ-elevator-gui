@@ -3,7 +3,7 @@ Run:
 ```bash
 
 
-gh repo clone https://github.com/2028badivi/occ-elevator-gui'
+gh repo clone https://github.com/2028badivi/occ-elevator-gui
 
 cd occ-elevator-gui
 python3 -m venv .venv
