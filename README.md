@@ -25,5 +25,6 @@ sudo apt install guizero
 or you can also do:
 
 ```bash
+brew install python
 pip3 install guizero
 ```
