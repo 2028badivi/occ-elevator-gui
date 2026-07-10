@@ -16,7 +16,7 @@ source /Users/<USER_ID>/<PATH_TO_CLONED_FOLDER>/.venv/bin/activate
 
 The GUI should render in its own window. Please be aware of some potential version compatibility issues.
 
-If you didn't previsouly install GUIzero, then you should do so in order for it to work. GUIzero is a framework for the Graphical User Interface (GUI) that I used:
+If you didn't previously install GUIzero, then you should do so in order for it to work. GUIzero is a framework for the Graphical User Interface (GUI):
 
 ```bash
 sudo apt install guizero
