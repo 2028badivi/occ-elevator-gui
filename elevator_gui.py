@@ -28,14 +28,7 @@ pot_voltage = 0.0
 
 
 # adc wiring and pinout
-#physical pins (pi) to the mcp3008 (ADC)
-#Pi MOSI  (GPIO10 physical 19) goes to MCP3008 DIN  pin 11
-#Pi MISO  (GPIO9  physical 21) goes to MCP3008 DOUT pin 10
-#Pi SCLK  (GPIO11 physical 23) goes to MCP3008 CLK  pin 12
-#Pi CE0   (GPIO8  physical 24) goes to MCP3008 CS   pin 13
-#Pi 3.3V  goes to MCP3008 VDD and VREF
-#Pi GND   goes to MCP3008 AGND and DGND
-
+# NOTE: need to correct the connection between the pin numbers from GPIO (the guizero library accepts GPIO numbers) to the physical pin numbers (that gpiozero accepts)
 
 
 ADC_VREF = 3.3
@@ -49,7 +42,7 @@ PINCHOMETER_THRESHOLDS = [ #also need to calibrate this too
     (0.00, 1),
 ]
 
-# the motor H-bridge driver pins
+# the motor driver pins
 MOTOR_DRIVER_IN1 = 17
 MOTOR_DRIVER_IN2 = 18
 FLOOR_LED_PINS = {1: 5, 2: 6, 3: 13, 4: 19}
@@ -107,6 +100,13 @@ class HardwareController:
 
 
 
+
+
+
+
+
+    
+
     def read_pinchometer_voltage(self) -> float:
         if self.is_gpio and self.pot:
             try: return float(self.pot.value) * ADC_VREF
@@ -161,11 +161,16 @@ class HardwareController:
             presence = {floor: False for floor in IR_SENSOR_CHANNELS}
         return presence
 
-    def move_toward(self, target_floor: int, speed: int) -> None:
+    def move_toward(self, target_floor: int, init_speed: int) -> None:
         if not self.is_gpio or self.motor is None:
             return
+        
+        #correct below code to a parabola style speed instead of being constant change
+
+                    
+
         current = self.get_floor_from_pinchometer(self.read_pinchometer_voltage())
-        duty = max(0.0, min(1.0, speed / 100.0))
+        duty = max(0.0, min(1.0, init_speed / 100.0))
         if target_floor > current:
             self.motor.forward(duty)
         elif target_floor < current:
@@ -180,6 +185,83 @@ class HardwareController:
         if self.motor is not None:
             self.motor.stop()
         self.last_target = None
+
+
+
+
+    #random seed set to standard 42 for the parabolic acceleration between start and destination (would be interrupted when there is an emergency stop)
+    import random
+    random.seed(42)
+
+
+    def calculate_parabolic_speed(start_floor: int, end_floor: int) -> tuple[list[float], float]:
+        """function not integrated yet into full gui logic"""
+        speeds_normalized = []
+
+        delays_between_each_speed = 0.5 
+
+        floors_to_travel = abs(end_floor - start_floor)
+        
+        num_of_speed_changes = 10 * floors_to_travel
+
+
+
+
+
+        parabolic_portion = int(num_of_speed_changes * 0.80)
+        
+        for i in range(parabolic_portion):
+            
+
+            x = (i / (parabolic_portion - 1)) * 9.25 if parabolic_portion > 1 else 5
+
+            raw_speed = (-1 * ((x - 5) ** 2) + 25) * 4 
+
+
+
+
+
+            current_speed = max(0.0, min(100, raw_speed))
+
+            speeds_normalized.append(round(current_speed, 2))
+
+
+
+
+        starting_buffer_speed = speeds_normalized[-1]
+
+
+
+
+        constant_portion = num_of_speed_changes - parabolic_portion
+        
+        for i in range(constant_portion):
+            
+
+
+            linear_speed = starting_buffer_speed * (1 - ((i + 1) / constant_portion))
+
+
+
+
+            speeds_normalized.append(round(linear_speed, 2))
+
+
+
+
+        return speeds_normalized, delays_between_each_speed
+
+
+
+
+
+
+
+
+
+            
+
+            
 
 
 #to init
