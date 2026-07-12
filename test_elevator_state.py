@@ -13,7 +13,13 @@ import time
 import unittest
 
 import config
-from elevator_state import ElevatorState, FLOOR_COORDS
+from elevator_state import (
+    ACCEL_DISTANCE_PIXELS,
+    DECEL_DISTANCE_PIXELS,
+    MIN_SPEED_FRACTION,
+    ElevatorState,
+    FLOOR_COORDS,
+)
 
 
 class ElevatorStateTests(unittest.TestCase):
@@ -68,6 +74,58 @@ class ElevatorStateTests(unittest.TestCase):
         state.step_car(speed_percent=0)
         self.assertEqual(state.car_y, start_y)
 
+    def test_effective_speed_is_ramped_down_right_at_leg_start(self):
+        # right at the start of a fresh move (distance_traveled == 0), the
+        # ramp should hold speed down at the minimum floor, not let it jump
+        # straight to full commanded speed
+        state = ElevatorState()
+        state.set_target(4)
+        expected = round(100 * MIN_SPEED_FRACTION)
+        self.assertEqual(state.effective_speed_percent(100), expected)
+
+    def test_effective_speed_is_full_in_the_middle_of_a_long_move(self):
+        # once past the accel distance and still outside the decel distance
+        # from the target, the car should be at full commanded speed (the
+        # "cruise" portion of the trip)
+        state = ElevatorState()
+        state.set_target(4)  # coords[4] = 80
+        target_y = FLOOR_COORDS[4]
+        # sit comfortably in the middle: far enough from both the start (320)
+        # and the target (80) that neither ramp is in effect
+        state.car_y = 200
+        self.assertGreater(abs(state.car_y - state._leg_start_y), ACCEL_DISTANCE_PIXELS)
+        self.assertGreater(abs(target_y - state.car_y), DECEL_DISTANCE_PIXELS)
+        self.assertEqual(state.effective_speed_percent(100), 100)
+
+    def test_effective_speed_ramps_down_near_the_target(self):
+        # within DECEL_DISTANCE_PIXELS of the target, speed should be reduced
+        # below full but never all the way to zero
+        state = ElevatorState()
+        state.set_target(4)
+        target_y = FLOOR_COORDS[4]
+        state.car_y = target_y + (DECEL_DISTANCE_PIXELS / 2)  # halfway into the decel zone
+        ramped = state.effective_speed_percent(100)
+        self.assertLess(ramped, 100)
+        self.assertGreaterEqual(ramped, round(100 * MIN_SPEED_FRACTION))
+
+    def test_effective_speed_returns_zero_for_zero_input(self):
+        # a commanded speed of 0 (motor stopped) should stay 0, not get
+        # bumped up by the minimum-speed floor
+        state = ElevatorState()
+        state.set_target(4)
+        self.assertEqual(state.effective_speed_percent(0), 0)
+
+    def test_step_car_still_reaches_target_despite_ramping(self):
+        # the ramp shouldn't prevent the car from ever actually arriving -
+        # confirms the MIN_SPEED_FRACTION floor keeps it making progress
+        state = ElevatorState()
+        state.set_target(4)
+        for _ in range(400):
+            state.step_car(speed_percent=100)
+            if state.has_arrived():
+                break
+        self.assertTrue(state.has_arrived())
+
     def test_on_arrival_advances_sequence_queue(self):
         # arriving at the first stop in a sequence should automatically make
         # the next stop the new target, with a brief pause before continuing
@@ -82,6 +140,15 @@ class ElevatorStateTests(unittest.TestCase):
         self.assertEqual(state.sequence_queue, [])
         self.assertTrue(state.sequence_mode)
         self.assertTrue(state.is_paused())  # should be pausing at floor 2 before heading to floor 3
+
+    def test_on_arrival_resets_leg_start_for_next_stop(self):
+        # each stop in a sequence should get its own fresh accel ramp,
+        # starting from wherever the car actually is when that leg begins
+        state = ElevatorState()
+        state.start_sequence([2, 3])
+        state.car_y = FLOOR_COORDS[2]
+        state.on_arrival()
+        self.assertEqual(state._leg_start_y, FLOOR_COORDS[2])
 
     def test_on_arrival_ends_sequence_when_queue_empty(self):
         # if this was the LAST floor in the sequence, sequence_mode should turn off

@@ -22,6 +22,16 @@ CAR_MIN_STEP_PIXELS = 0.5  # even at low speed there should still be SOME moveme
 ARRIVAL_TOLERANCE_PIXELS = 1.0  # close enough to the target counts as "arrived"
 SEQUENCE_STOP_PAUSE_SECONDS = 0.65  # how long to wait at each stop before moving to the next one in a sequence
 
+# instead of running at one constant speed and stopping abruptly, the car
+# ramps up smoothly over the first ACCEL_DISTANCE_PIXELS of a move, cruises
+# at full commanded speed if the move is long enough, then ramps back down
+# over the last DECEL_DISTANCE_PIXELS as it nears the target. for a short
+# hop (like adjacent floors) where the two ramps overlap, it naturally forms
+# a smaller triangular speed profile instead of ever reaching full cruise speed.
+ACCEL_DISTANCE_PIXELS = 25.0
+DECEL_DISTANCE_PIXELS = 25.0
+MIN_SPEED_FRACTION = 0.15  # never ramp all the way down to a dead stop mid-move
+
 
 class ElevatorState:
     # This class just keeps track of everything about where the elevator is
@@ -38,6 +48,7 @@ class ElevatorState:
         self.resume_at = None  # a timestamp for "don't move again until this time" (None = not paused)
         self.hardware_target_started_at = None  # used for stall detection, see note_hardware_target below
         self.stalled = False  # True if the motor appears stuck / not making progress
+        self._leg_start_y = self.car_y  # where the current move began, for the accel/decel ramp
 
     def is_paused(self) -> bool:
         # True during a brief pause (like waiting at a floor during a
@@ -57,6 +68,7 @@ class ElevatorState:
         self.sequence_mode = False
         self.sequence_queue = []
         self.target_floor = floor
+        self._leg_start_y = self.car_y  # a fresh move starts here, for the accel ramp
         self._clear_fault()
 
     def start_sequence(self, floors: list) -> None:
@@ -70,6 +82,7 @@ class ElevatorState:
         self.target_floor = ordered[0]  # go to the first (lowest) floor first
         self.sequence_queue = ordered[1:]  # save the rest for later
         self.sequence_mode = True
+        self._leg_start_y = self.car_y
         self._clear_fault()
 
     def cancel(self, floor: int) -> None:
@@ -78,6 +91,7 @@ class ElevatorState:
         self.sequence_mode = False
         self.sequence_queue = []
         self.target_floor = floor
+        self._leg_start_y = self.car_y
         self._clear_fault()
 
     def nearest_floor_to_car(self) -> int:
@@ -92,15 +106,35 @@ class ElevatorState:
         # pixel or so is plenty good)
         return abs(self.car_y - FLOOR_COORDS[self.target_floor]) <= ARRIVAL_TOLERANCE_PIXELS
 
+    def effective_speed_percent(self, speed_percent: int) -> int:
+        # applies the accel/decel ramp on top of whatever speed was
+        # commanded (e.g. from the speed slider), based on how far the car
+        # has traveled since the current move started and how far it still
+        # has left to go. exposed as its own method (not just folded into
+        # step_car) so the real motor's commanded speed can be ramped the
+        # same way the simulated car is - see hardware.move_toward() callers
+        # in gui.py.
+        if speed_percent <= 0:
+            return 0
+        target_y = FLOOR_COORDS[self.target_floor]
+        distance_traveled = abs(self.car_y - self._leg_start_y)
+        distance_remaining = abs(target_y - self.car_y)
+        accel_fraction = min(1.0, distance_traveled / ACCEL_DISTANCE_PIXELS)
+        decel_fraction = min(1.0, distance_remaining / DECEL_DISTANCE_PIXELS)
+        ramp_fraction = max(MIN_SPEED_FRACTION, min(accel_fraction, decel_fraction))
+        return round(speed_percent * ramp_fraction)
+
     def step_car(self, speed_percent: int) -> None:
         # runs once per animation frame and nudges the car's position a
         # little bit closer to the target floor. speed_percent controls how
         # big a step is taken each time (bigger speed = bigger steps = looks
-        # like it's moving faster).
+        # like it's moving faster), ramped up/down near the start/end of the
+        # move instead of snapping straight to full speed and stopping abruptly.
         if self.is_paused() or self.has_arrived() or speed_percent <= 0:
             return  # nothing to do if paused, already there, or stopped
         target_y = FLOOR_COORDS[self.target_floor]
-        step = max(CAR_MIN_STEP_PIXELS, (speed_percent / 100.0) * CAR_STEP_PIXELS_PER_TICK_AT_FULL_SPEED)
+        ramped_speed_percent = self.effective_speed_percent(speed_percent)
+        step = max(CAR_MIN_STEP_PIXELS, (ramped_speed_percent / 100.0) * CAR_STEP_PIXELS_PER_TICK_AT_FULL_SPEED)
         if self.car_y < target_y:
             # target is below (bigger y = lower on screen), so move down
             self.car_y += min(step, target_y - self.car_y)
@@ -123,6 +157,7 @@ class ElevatorState:
             if self.sequence_queue:
                 # more stops left, so grab the next one and pause briefly first
                 self.target_floor = self.sequence_queue.pop(0)
+                self._leg_start_y = self.car_y  # next stop is a fresh move, ramp from here
                 self.resume_at = time.monotonic() + SEQUENCE_STOP_PAUSE_SECONDS
             else:
                 # that was the last stop, sequence is done

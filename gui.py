@@ -24,14 +24,14 @@ motor_speed = config.DEFAULT_SPEED  # starts at the default speed until the slid
 def go_to_floor(floor: int) -> None:
     # runs whenever one of the "Floor 1/2/3/4" buttons is clicked
     state.set_target(floor)
-    hardware.move_toward(floor, motor_speed)
+    hardware.move_toward(floor, state.effective_speed_percent(motor_speed))
     status_text.value = f"Moving to floor {floor}..."
 
 
 def home() -> None:
     # runs when the Home button is clicked, sends the elevator back to the start floor
     state.set_target(config.START_FLOOR)
-    hardware.move_toward(config.START_FLOOR, motor_speed)
+    hardware.move_toward(config.START_FLOOR, state.effective_speed_percent(motor_speed))
     status_text.value = f"Going home: floor {config.START_FLOOR}"
 
 
@@ -57,7 +57,7 @@ def run_sequence() -> None:
 
     state.start_sequence(selected)
     prog_status.value = f"Running: {sorted(selected)}"
-    hardware.move_toward(state.target_floor, motor_speed)
+    hardware.move_toward(state.target_floor, state.effective_speed_percent(motor_speed))
     status_text.value = f"Moving to floor {state.target_floor}..."
 
 
@@ -66,7 +66,7 @@ def on_speed_change(value) -> None:
     global motor_speed
     motor_speed = int(value)  # the slider passes its value as a string, so it gets converted to a number
     speed_label.value = f"Speed: {motor_speed}%"
-    hardware.move_toward(state.target_floor, motor_speed)
+    hardware.move_toward(state.target_floor, state.effective_speed_percent(motor_speed))
 
 
 def _refresh_indicator() -> None:
@@ -187,7 +187,7 @@ def glide_step() -> None:
             hardware.stop()
             status_text.value = f"FAULT: motor stall - floor {state.target_floor} not reached"
         elif not state.stalled:
-            hardware.move_toward(state.target_floor, motor_speed)
+            hardware.move_toward(state.target_floor, state.effective_speed_percent(motor_speed))
 
     if not state.stalled:
         # keeps animating the simulated car UNLESS a stall fault has been flagged
