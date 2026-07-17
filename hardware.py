@@ -12,9 +12,13 @@
 import config
 
 try:
-    # these libraries only work on a real Pi (or with the pigpio daemon running)
+    # these libraries only actually work on a real Pi. no pin_factory is
+    # specified anywhere below - gpiozero auto-detects the right backend for
+    # whatever OS it's running on (lgpio on this Pi 4B + Ubuntu 24.04 setup;
+    # RPi.GPIO doesn't work reliably on Ubuntu, so this is deliberately NOT
+    # hardcoded to a specific backend the way an older PiGPIOFactory-based
+    # version of this file used to be)
     from gpiozero import LED, MCP3008, Motor
-    from gpiozero.pins.pigpio import PiGPIOFactory
     GPIO_AVAILABLE = True
 except Exception:
     # if literally anything goes wrong importing these, just assume no hardware
@@ -35,24 +39,19 @@ class HardwareController:
 
         if self.is_gpio:
             try:
-                # this factory is basically how gpiozero talks to the pins
-                # through the pigpio daemon (pigpiod has to be running for this to work)
-                factory = PiGPIOFactory()
-
                 # set up the motor - forward pin drives it up, backward pin drives it down
                 self.motor = Motor(
                     forward=config.MOTOR_PWM1_FORWARD_PIN,
                     backward=config.MOTOR_PWM2_REVERSE_PIN,
                     pwm=True,
-                    pin_factory=factory,
                 )
                 # one LED object per floor, so each can be turned on/off individually
                 self.floor_leds = {
-                    floor: LED(pin, pin_factory=factory)
+                    floor: LED(pin)
                     for floor, pin in config.FLOOR_LED_PINS.items()
                 }
                 # potentiometer position, read through the MCP3008 ADC
-                self.pot = MCP3008(channel=config.MCP3008_POT_CHANNEL, pin_factory=factory)
+                self.pot = MCP3008(channel=config.MCP3008_POT_CHANNEL)
 
                 # --- IR floor sensors: DISABLED FOR NOW ---
                 #Williams recommendation
@@ -66,7 +65,7 @@ class HardwareController:
                 # IR_SENSOR_MCP3008_CHANNELS in config.py) once ready to bring
                 # the IR sensors into the test.
                 # self.ir_sensors = {
-                #     floor: MCP3008(channel=channel, pin_factory=factory)
+                #     floor: MCP3008(channel=channel)
                 #     for floor, channel in config.IR_SENSOR_MCP3008_CHANNELS.items()
                 # }
             except Exception as exc:
