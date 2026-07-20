@@ -447,9 +447,11 @@ app.repeat(16, glide_step)  # keeps calling glide_step roughly every 16ms, which
 
 
 def main() -> None:
-    # fullscreen gets set here, right before displaying, now that every
-    # widget already exists - see the NOTE near the App() creation above
-    app.set_full_screen()
+    # TEMPORARY: fullscreen disabled for diagnosing the blank-window issue -
+    # testing whether the window renders normally in plain windowed mode,
+    # to isolate whether the window manager's fullscreen handling is the
+    # actual cause. Restore app.set_full_screen() once that's confirmed.
+    # app.set_full_screen()
     # this is what actually opens the window and keeps it running. nothing
     # after this line runs until the window is closed
     app.display()
