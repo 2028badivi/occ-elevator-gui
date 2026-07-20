@@ -24,17 +24,17 @@ MOTOR_PWM2_REVERSE_PIN = 18   # GPIO pin number for backward/down
 # actually does analog-to-digital conversion. it has 8 channels total, so
 # there's room for the pot (1 channel) plus all 4 IR sensors with 3 spare.
 #
-#AI GENERATED!! {
 # Pi MOSI (GPIO10, physical pin 19) -> MCP3008 DIN  (pin 11)
-# Pi MISO (GPIO9,  physical pin 21) -> MCP3008 DOUT (pin 10)
+# Pi MISO (GPIO9,  physical pin 21) -> MCP3008 DOUT (pin 13)
 # Pi SCLK (GPIO11, physical pin 23) -> MCP3008 CLK  (pin 12)
-# Pi CE0  (GPIO8,  physical pin 24) -> MCP3008 CS   (pin 13)
-# Pi 3.3V -> MCP3008 VDD and VREF
-# Pi GND  -> MCP3008 AGND and DGND
-#}
+# Pi CE0  (GPIO8,  physical pin 24) -> MCP3008 CS   (pin 10)
+# Pi 3.3V -> MCP3008 VDD (pin 16) and VREF (pin 15)
+# Pi GND  -> MCP3008 AGND (pin 14) and DGND (pin 9)
 # --- Position potentiometer ---
-MCP3008_POT_CHANNEL = 0  # TODO: not wired yet!! confirm once connected
-#{
+# pot wiring: one outer leg -> Pi 3.3V, other outer leg -> Pi GND, middle
+# wiper leg -> MCP3008 CH0 (pin 1) - same 3.3V/GND rail the MCP3008 itself
+# uses for VDD/VREF, so the pot's output range matches the ADC's input range
+MCP3008_POT_CHANNEL = 0
 # fraction-of-range thresholds (0.0-1.0 - gpiozero's MCP3008.value is already
 # normalized to this range) mapping pot position to a floor. the code walks
 # down the list and the first one that matches wins - so if the reading is
