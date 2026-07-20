@@ -224,6 +224,14 @@ def glide_step() -> None:
     _after_widget_updates = time.monotonic()
 
     draw_simulation()
+
+    # forces Tk to actually flush pending drawing/geometry updates to the
+    # screen right now, instead of passively waiting for the window manager
+    # to trigger a repaint on its own. on this Pi's desktop environment,
+    # nothing was rendering at all until an outside event (alt-tab, a
+    # terminal focus change from Ctrl+C) forced a repaint - this makes that
+    # flush happen every tick instead of depending on the window manager for it.
+    app.tk.update_idletasks()
     _after_draw = time.monotonic()
 
     total = _after_draw - _tick_start
@@ -443,6 +451,7 @@ hardware_mode_label.value = "Hardware: connected" if hardware.is_gpio else "Hard
 show_panel("main")  # sets the initial nav tab highlight to match the panel shown by default
 
 draw_simulation()  # draws once immediately so the window doesn't start out blank
+app.tk.update_idletasks()  # forces that first draw to actually flush to the screen right away
 app.repeat(16, glide_step)  # keeps calling glide_step roughly every 16ms, which is about 60 times a second
 
 
