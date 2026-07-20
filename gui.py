@@ -247,7 +247,12 @@ ACCENT_COLOR = "#00bcd4"
 CARD_BG = "#242424"  # slightly lighter than the app background, for "card" panels
 
 app = App(title="OCC Testbed Final Version GUI", width=640, height=480, bg="#1e1e1e")
-app.set_full_screen()  # opens maximized to whatever screen it's running on (press Escape to leave fullscreen)
+# NOTE: fullscreen is deliberately NOT set here, right after creating an
+# empty window. On some Linux window managers, toggling -fullscreen on a
+# window before its widgets exist confuses the redraw pipeline - the window
+# appears but stays blank until something (like closing it) forces a repaint.
+# app.set_full_screen() is called at the very end of main(), after every
+# widget below has already been built, which avoids that.
 
 TOP_BAR_HEIGHT = 56
 
@@ -289,7 +294,7 @@ def text_size(value):
 # the live floor/speed/hardware numbers are never hidden by switching tabs
 top_bar = Box(app, align="top", width="fill", height=TOP_BAR_HEIGHT)
 top_bar.bg = "#141414"
-Text(top_bar, text="OCC Elevator Testbed", color=ACCENT_COLOR, size=14, bold=True, align="left")
+Text(top_bar, text="OCC Elevator Testbed", color=ACCENT_COLOR, size=14, align="left")
 top_status_label = Text(top_bar, text="", color="white", size=10, align="right")
 
 # splits the rest of the window into a left side (buttons/controls) and right
@@ -337,7 +342,7 @@ nav_buttons = {
 
 # ------------------ Main panel: floor buttons + status ------------------
 main_panel = Box(controls_box, width="fill", height="fill", layout="auto")
-Text(main_panel, text="Main Controls", color=ACCENT_COLOR, size=12, bold=True)
+Text(main_panel, text="Main Controls", color=ACCENT_COLOR, size=12)
 Text(main_panel, text="")  # spacer
 
 # little strip of colored boxes across the top showing which floor is active
@@ -362,7 +367,7 @@ _style_button(PushButton(main_panel, text="Emergency Stop", width=20, command=em
 
 # ------------------ Programming panel: pick + run a sequence ------------------
 prog_panel = Box(controls_box, width="fill", height="fill", layout="auto")
-Text(prog_panel, text="Program Sequence", color=ACCENT_COLOR, size=12, bold=True)
+Text(prog_panel, text="Program Sequence", color=ACCENT_COLOR, size=12)
 Text(prog_panel, text="Pick the order for the stop sequence:", color="white", size=11)
 Text(prog_panel, text="")  # spacer
 floor_checkboxes = {}
@@ -378,7 +383,7 @@ prog_panel.hide()  # hidden until "Program" is clicked up top
 
 # ------------------ Settings panel: motor speed slider ------------------
 settings_panel = Box(controls_box, width="fill", height="fill", layout="auto")
-Text(settings_panel, text="Settings", color=ACCENT_COLOR, size=12, bold=True)
+Text(settings_panel, text="Settings", color=ACCENT_COLOR, size=12)
 Text(settings_panel, text="Control the motor speed", color="white", size=11)
 speed_slider = Slider(settings_panel, start=0, end=100, width=300, command=on_speed_change)
 speed_slider.value = config.DEFAULT_SPEED  # starts the slider at the default so it's not just 0 on launch
@@ -389,7 +394,7 @@ Text(settings_panel, text="e.g. acceleration ramp, floor offsets", color="white"
 settings_panel.hide()  # hidden until "Settings" is clicked up top
 
 # ------------------ Right side: little visual elevator simulator ------------------
-Text(visual_box, text="Simulator", color=ACCENT_COLOR, size=12, bold=True)
+Text(visual_box, text="Simulator", color=ACCENT_COLOR, size=12)
 sensor_status_box = Box(visual_box, width="fill", height=30)
 sensor_status_box.bg = CARD_BG
 sensor_status_light = Box(sensor_status_box, align="left", width=12, height=12)
@@ -404,7 +409,7 @@ drawing = Drawing(visual_box, width=drawing_width, height=drawing_height)
 diagnostics_box = Box(visual_box, width="fill", height="fill", layout="auto")
 diagnostics_box.bg = CARD_BG
 Text(diagnostics_box, text="")  # spacer
-Text(diagnostics_box, text="Diagnostics", color=ACCENT_COLOR, size=9, bold=True)
+Text(diagnostics_box, text="Diagnostics", color=ACCENT_COLOR, size=11)  # bumped from 9 to 11 to stay visually distinct now that it's not bold
 hardware_mode_label = Text(diagnostics_box, text="Hardware: --", color="white", size=8)
 pot_diagnostics_label = Text(diagnostics_box, text="Pot: --", color="white", size=8)
 ir_diagnostics_label = Text(diagnostics_box, text="IR: --", color="white", size=8)
@@ -417,6 +422,9 @@ app.repeat(16, glide_step)  # keeps calling glide_step roughly every 16ms, which
 
 
 def main() -> None:
+    # fullscreen gets set here, right before displaying, now that every
+    # widget already exists - see the NOTE near the App() creation above
+    app.set_full_screen()
     # this is what actually opens the window and keeps it running. nothing
     # after this line runs until the window is closed
     app.display()
