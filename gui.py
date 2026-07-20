@@ -8,18 +8,11 @@
 # from elevator_state.py (for the logic/math) and hardware.py (for the real
 # motor/sensors) and displays whatever they report.
 
-import time
-
 from guizero import App, Box, Text, PushButton, CheckBox, Slider, Drawing
 
 import config
 from elevator_state import ElevatorState, FLOOR_COORDS
 from hardware import HardwareController
-
-# TEMPORARY diagnostic: prints how long each phase of glide_step() takes
-# whenever a tick runs slow, to figure out where a rendering bottleneck
-# actually is instead of guessing. Safe to remove once that's found.
-SLOW_TICK_THRESHOLD_SECONDS = 0.05
 
 # these two objects are basically the "backend" of the whole app - one knows
 # about the real hardware, the other knows about the simulated logic/position
@@ -179,14 +172,11 @@ def glide_step() -> None:
     # note: the pot gets read ONCE per tick, through the MCP3008, and that
     # same reading is handed to both get_current_floor() and the diagnostics
     # display, instead of each of them triggering its own separate SPI read
-    _tick_start = time.monotonic()
-
     pot_reading = hardware.read_potentiometer()
     hardware_floor = hardware.get_current_floor(pot_reading)
     hardware.update_floor_leds(hardware_floor)
     presence = hardware.floor_presence()
     ir_readings = hardware.ir_raw_readings()
-    _after_hardware_reads = time.monotonic()
 
     if hardware.is_gpio:
         # the real motor safety checks only matter if real hardware is
@@ -216,33 +206,18 @@ def glide_step() -> None:
             prog_status.value = ""
             status_text.value = f"Stopped at floor {state.current_floor}"
 
-    _after_state_logic = time.monotonic()
-
     _update_sensor_status_bar(presence)
     _update_diagnostics(pot_reading, ir_readings)
     _update_top_bar()
-    _after_widget_updates = time.monotonic()
-
     draw_simulation()
 
     # forces Tk to actually flush pending drawing/geometry updates to the
     # screen right now, instead of passively waiting for the window manager
-    # to trigger a repaint on its own. on this Pi's desktop environment,
-    # nothing was rendering at all until an outside event (alt-tab, a
-    # terminal focus change from Ctrl+C) forced a repaint - this makes that
-    # flush happen every tick instead of depending on the window manager for it.
+    # to trigger a repaint on its own - on the Pi's desktop environment nothing
+    # rendered at all until an outside event (alt-tab, a terminal focus change)
+    # forced a repaint, so this makes that flush happen every tick instead of
+    # depending on the window manager for it
     app.tk.update_idletasks()
-    _after_draw = time.monotonic()
-
-    total = _after_draw - _tick_start
-    if total > SLOW_TICK_THRESHOLD_SECONDS:
-        print(
-            f"[perf] SLOW TICK {total * 1000:.0f}ms total - "
-            f"hardware_reads={(_after_hardware_reads - _tick_start) * 1000:.0f}ms "
-            f"state_logic={(_after_state_logic - _after_hardware_reads) * 1000:.0f}ms "
-            f"widget_updates={(_after_widget_updates - _after_state_logic) * 1000:.0f}ms "
-            f"draw_simulation={(_after_draw - _after_widget_updates) * 1000:.0f}ms"
-        )
 
 
 def show_panel(panel_name: str) -> None:
@@ -280,12 +255,12 @@ ACCENT_COLOR = "#00bcd4"
 CARD_BG = "#242424"  # slightly lighter than the app background, for "card" panels
 
 app = App(title="OCC Testbed Final Version GUI", width=640, height=480, bg="#1e1e1e")
-# NOTE: fullscreen is deliberately NOT set here, right after creating an
-# empty window. On some Linux window managers, toggling -fullscreen on a
-# window before its widgets exist confuses the redraw pipeline - the window
-# appears but stays blank until something (like closing it) forces a repaint.
-# app.set_full_screen() is called at the very end of main(), after every
-# widget below has already been built, which avoids that.
+# NOTE: app.set_full_screen() is called at the very end of main(), after every
+# widget below has already been built, rather than right here on an empty
+# window - keeping it in that order just to build widgets against a settled
+# window state. The actual blank-window bug on the Pi turned out to be
+# unrelated to fullscreen or timing at all - see update_idletasks() in
+# glide_step() for the real cause and fix.
 
 TOP_BAR_HEIGHT = 56
 
@@ -456,11 +431,12 @@ app.repeat(16, glide_step)  # keeps calling glide_step roughly every 16ms, which
 
 
 def main() -> None:
-    # TEMPORARY: fullscreen disabled for diagnosing the blank-window issue -
-    # testing whether the window renders normally in plain windowed mode,
-    # to isolate whether the window manager's fullscreen handling is the
-    # actual cause. Restore app.set_full_screen() once that's confirmed.
-    # app.set_full_screen()
+    # fullscreen gets set here, right before displaying, after every widget
+    # already exists - see the NOTE near the App() creation above. turns out
+    # fullscreen itself was never the cause of the blank-window bug (that was
+    # the window manager not reliably triggering Tk's repaint - see the
+    # update_idletasks() call in glide_step()), so this is safe to re-enable.
+    app.set_full_screen()
     # this is what actually opens the window and keeps it running. nothing
     # after this line runs until the window is closed
     app.display()
