@@ -8,11 +8,18 @@
 # from elevator_state.py (for the logic/math) and hardware.py (for the real
 # motor/sensors) and displays whatever they report.
 
+import time
+
 from guizero import App, Box, Text, PushButton, CheckBox, Slider, Drawing
 
 import config
 from elevator_state import ElevatorState, FLOOR_COORDS
 from hardware import HardwareController
+
+# TEMPORARY diagnostic: prints how long each phase of glide_step() takes
+# whenever a tick runs slow, to figure out where a rendering bottleneck
+# actually is instead of guessing. Safe to remove once that's found.
+SLOW_TICK_THRESHOLD_SECONDS = 0.05
 
 # these two objects are basically the "backend" of the whole app - one knows
 # about the real hardware, the other knows about the simulated logic/position
@@ -172,11 +179,14 @@ def glide_step() -> None:
     # note: the pot gets read ONCE per tick, through the MCP3008, and that
     # same reading is handed to both get_current_floor() and the diagnostics
     # display, instead of each of them triggering its own separate SPI read
+    _tick_start = time.monotonic()
+
     pot_reading = hardware.read_potentiometer()
     hardware_floor = hardware.get_current_floor(pot_reading)
     hardware.update_floor_leds(hardware_floor)
     presence = hardware.floor_presence()
     ir_readings = hardware.ir_raw_readings()
+    _after_hardware_reads = time.monotonic()
 
     if hardware.is_gpio:
         # the real motor safety checks only matter if real hardware is
@@ -206,10 +216,25 @@ def glide_step() -> None:
             prog_status.value = ""
             status_text.value = f"Stopped at floor {state.current_floor}"
 
+    _after_state_logic = time.monotonic()
+
     _update_sensor_status_bar(presence)
     _update_diagnostics(pot_reading, ir_readings)
     _update_top_bar()
+    _after_widget_updates = time.monotonic()
+
     draw_simulation()
+    _after_draw = time.monotonic()
+
+    total = _after_draw - _tick_start
+    if total > SLOW_TICK_THRESHOLD_SECONDS:
+        print(
+            f"[perf] SLOW TICK {total * 1000:.0f}ms total - "
+            f"hardware_reads={(_after_hardware_reads - _tick_start) * 1000:.0f}ms "
+            f"state_logic={(_after_state_logic - _after_hardware_reads) * 1000:.0f}ms "
+            f"widget_updates={(_after_widget_updates - _after_state_logic) * 1000:.0f}ms "
+            f"draw_simulation={(_after_draw - _after_widget_updates) * 1000:.0f}ms"
+        )
 
 
 def show_panel(panel_name: str) -> None:
