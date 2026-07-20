@@ -187,7 +187,7 @@ def glide_step() -> None:
             hardware.stop()
             status_text.value = f"FAULT: motor stall - floor {state.target_floor} not reached"
         elif not state.stalled:
-            hardware.move_toward(state.target_floor, state.effective_speed_percent(motor_speed))
+            hardware.move_toward(state.target_floor, state.effective_speed_percent(motor_speed), pot_reading)
 
     if not state.stalled:
         # keeps animating the simulated car UNLESS a stall fault has been flagged

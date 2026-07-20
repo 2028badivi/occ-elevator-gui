@@ -173,13 +173,20 @@ class HardwareController:
         # is the one used specifically for the on-screen diagnostics readout
         return self.floor_presence()
 
-    def move_toward(self, target_floor: int, speed: int) -> None:
+    def move_toward(self, target_floor: int, speed: int, pot_reading: dict = None) -> None:
         # tells the motor to spin toward whatever floor is targeted. speed
         # comes in as 0-100 (like a percent) since that's easier to think
-        # about, but the motor library wants 0.0-1.0, so it gets converted here
+        # about, but the motor library wants 0.0-1.0, so it gets converted here.
+        #
+        # pot_reading is optional, same idea as get_current_floor() - if the
+        # caller already read the pot this frame, hand it in here so this
+        # doesn't trigger its own second physical read on every single call.
+        # this matters most in glide_step(), which calls this ~60 times a
+        # second - without passing pot_reading through, every one of those
+        # ticks was quietly doing TWO pot reads instead of one.
         if not self.is_gpio or self.motor is None:
             return
-        current = self.get_current_floor()
+        current = self.get_current_floor(pot_reading)
         duty = max(0.0, min(1.0, speed / 100.0))
         if target_floor > current:
             self.motor.forward(duty)
