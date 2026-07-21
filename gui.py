@@ -168,20 +168,32 @@ def draw_simulation() -> None:
     # happens right here, only for drawing.
     drawing.clear()  # wipe the canvas so everything can be drawn fresh
 
+    # every size below comes from a REAL measurement pushed through the same
+    # uniform mm->pixel scale, so proportions on screen match the actual rig
+    cx = 70  # horizontal center of the shaft on the design canvas
     car_design_y = mm_to_design_y(state.car_y)
-    cx, cy = 70, car_design_y
-    car_top_y = cy - 20
+    car_half_w = mm_len(CAR_WIDTH_MM) / 2
+    car_half_h = mm_len(CAR_HEIGHT_MM) / 2
+    shaft_half_w = mm_len(SHAFT_INTERIOR_WIDTH_MM) / 2
+    shaft_left = cx - shaft_half_w
+    shaft_right = cx + shaft_half_w
+    car_top_y = car_design_y - car_half_h
 
     # the outer shaft box and a faint guide rail down the middle
-    drawing.rectangle(sc(30), sc(20), sc(110), sc(380), color="#1e1e1e", outline=True, outline_color="#555555")
-    drawing.line(sc(70), sc(20), sc(70), sc(380), color="#333333")
+    drawing.rectangle(
+        sc(shaft_left), sc(SHAFT_TOP_DESIGN_Y), sc(shaft_right), sc(SHAFT_BOTTOM_DESIGN_Y),
+        color="#1e1e1e", outline=True, outline_color="#555555",
+    )
+    drawing.line(sc(cx), sc(SHAFT_TOP_DESIGN_Y), sc(cx), sc(SHAFT_BOTTOM_DESIGN_Y), color="#333333")
 
-    # the pulley wheel at the top of the shaft. its rotation angle comes
-    # straight from the physics: the car has traveled car_y mm of cable, and
-    # the pulley turns once per circumference of cable - so the wheel on
-    # screen spins exactly in step with how the real 74mm pulley would,
-    # including visibly slowing down through the accel/decel ramps
-    pulley_cx, pulley_cy, pulley_r = 70, 11, 8
+    # the pulley wheel above the shaft, drawn at its TRUE size (74mm diameter
+    # on the same scale as everything else). its rotation angle comes straight
+    # from the physics: the car has traveled car_y mm of cable, and the pulley
+    # turns once per circumference - so the wheel on screen spins exactly in
+    # step with the real pulley, visibly slowing through the accel/decel ramps
+    pulley_r = mm_len(config.PULLEY_DIAMETER_MM / 2)
+    pulley_cx = cx
+    pulley_cy = SHAFT_TOP_DESIGN_Y - pulley_r - 4
     drawing.oval(
         sc(pulley_cx - pulley_r), sc(pulley_cy - pulley_r),
         sc(pulley_cx + pulley_r), sc(pulley_cy + pulley_r),
@@ -196,18 +208,21 @@ def draw_simulation() -> None:
             sc(pulley_cx + dx), sc(pulley_cy + dy),
             color="#888888",
         )
+    # hub dot in the middle of the pulley
+    drawing.oval(sc(pulley_cx - 2), sc(pulley_cy - 2), sc(pulley_cx + 2), sc(pulley_cy + 2), color="#aaaaaa")
 
     # the cable from the pulley down to the top of the car
-    drawing.line(sc(70), sc(pulley_cy + pulley_r), sc(70), sc(car_top_y), color="#999999")
+    drawing.line(sc(cx), sc(pulley_cy + pulley_r), sc(cx), sc(car_top_y), color="#999999")
 
     # draw a little beam + light bulb + label for each floor, with each
     # floor's real height in mm under its label so the display reads as a
-    # real coordinate system rather than just cartoon floors
+    # real coordinate system rather than just cartoon floors. "near" is a
+    # real distance too: within 40mm of the floor's actual height
     for floor_num, height_mm in FLOOR_HEIGHTS_MM.items():
         fy = mm_to_design_y(height_mm)
-        is_near = abs(car_design_y - fy) <= 15  # is the car close enough to this floor to "light up"
+        is_near = abs(state.car_y - height_mm) <= 40
         beam_color = "#00FF66" if is_near else "#442222"
-        drawing.line(sc(30), sc(fy), sc(110), sc(fy), color=beam_color)
+        drawing.line(sc(shaft_left), sc(fy), sc(shaft_right), sc(fy), color=beam_color)
 
         light_color = "#00FF66" if is_near else "#333333"
         drawing.oval(sc(125), sc(fy - 6), sc(137), sc(fy + 6), color=light_color)
@@ -215,9 +230,10 @@ def draw_simulation() -> None:
         drawing.text(sc(8), sc(fy - 16), f"F{floor_num}", color="white", size=text_size(9))
         drawing.text(sc(8), sc(fy - 2), f"{height_mm}", color="#777777", size=text_size(6))
 
-    # draw the elevator car itself - a box with a door split down the middle
-    x1, y1 = cx - 18, cy - 20
-    x2, y2 = cx + 18, cy + 20
+    # draw the elevator car itself - a box with a door split down the middle,
+    # sized on the same real-world scale as the shaft around it
+    x1, y1 = cx - car_half_w, car_design_y - car_half_h
+    x2, y2 = cx + car_half_w, car_design_y + car_half_h
     car_color = "#00bcd4" if not state.has_arrived() else "#2d6a4f"  # blue while moving, green once stopped
     drawing.rectangle(sc(x1), sc(y1), sc(x2), sc(y2), color=car_color, outline=True, outline_color="white")
     drawing.line(sc(cx), sc(y1 + 3), sc(cx), sc(y2 - 3), color="#0b3a44")
@@ -230,9 +246,9 @@ def draw_simulation() -> None:
     if not state.has_arrived():
         target_design_y = mm_to_design_y(FLOOR_HEIGHTS_MM[state.target_floor])
         dir_char = "▲" if car_design_y > target_design_y else "▼"
-        drawing.text(sc(cx - 5), sc(cy - 8), dir_char, color="white", size=text_size(9))
+        drawing.text(sc(cx - 5), sc(car_design_y - 8), dir_char, color="white", size=text_size(9))
     else:
-        drawing.text(sc(cx - 5), sc(cy - 6), "●", color="white", size=text_size(7))
+        drawing.text(sc(cx - 5), sc(car_design_y - 6), "●", color="white", size=text_size(7))
 
     # live height/velocity readout in the bottom-right corner of the canvas,
     # in real physical units - this is the "millimeter coordinate system"
@@ -388,24 +404,34 @@ def text_size(value):
     return value
 
 
-# elevator_state.py works in real millimeters now (floor 1 = 0mm, measuring
-# up from the ground), not pixels. this maps a real height back onto the
-# ORIGINAL 0-380 design-pixel space the drawing was laid out in, so none of
-# draw_simulation()'s actual drawing code has to change - only what feeds
-# into it. 0mm -> design-y 320 (near the bottom of the canvas), and the top
-# floor's real height -> design-y 80 (near the top) - same endpoints the old
-# hardcoded FLOOR_COORDS used to use directly.
-DESIGN_Y_FOR_FLOOR_1 = 320
-DESIGN_Y_FOR_TOP_FLOOR = 80
-_MM_FOR_FLOOR_1 = FLOOR_HEIGHTS_MM[1]
-_MM_FOR_TOP_FLOOR = FLOOR_HEIGHTS_MM[config.FLOOR_COUNT]
+# --- real-geometry screen mapping ---
+# elevator_state.py works in real millimeters (floor 1 = 0mm, measuring up
+# from the ground). the entire shaft view is drawn on ONE uniform mm->pixel
+# scale, used for BOTH axes - vertical positions, shaft width, car size, and
+# pulley size all come from real measured dimensions through the same
+# conversion, so everything on screen is genuinely proportional to the
+# physical rig instead of eyeballed. margins are from the CAD sketch: 18mm
+# of shaft below floor 1 and 43mm above floor 4, in a 95mm-wide interior.
+SHAFT_BOTTOM_MARGIN_MM = 18   # shaft continues this far below floor 1
+SHAFT_TOP_MARGIN_MM = 43      # shaft continues this far above the top floor
+SHAFT_INTERIOR_WIDTH_MM = 95  # real interior width of the shaft
+CAR_WIDTH_MM = 80             # display size of the car (approximate)
+CAR_HEIGHT_MM = 100           # display size of the car (approximate)
+
+SHAFT_TOP_DESIGN_Y = 40       # where the shaft interior starts on the design canvas
+SHAFT_BOTTOM_DESIGN_Y = 372   # where it ends (leaves room for the pulley above)
+_TOTAL_SHAFT_MM = SHAFT_BOTTOM_MARGIN_MM + FLOOR_HEIGHTS_MM[config.FLOOR_COUNT] + SHAFT_TOP_MARGIN_MM
+MM_TO_DESIGN = (SHAFT_BOTTOM_DESIGN_Y - SHAFT_TOP_DESIGN_Y) / _TOTAL_SHAFT_MM
+
+
+def mm_len(length_mm):
+    """Converts a real length in mm to design-canvas pixels (same scale both axes)."""
+    return length_mm * MM_TO_DESIGN
 
 
 def mm_to_design_y(height_mm):
-    """Maps a real-world height (mm, 0 at floor 1) onto the drawing's original 0-380 design-pixel space."""
-    span_mm = _MM_FOR_TOP_FLOOR - _MM_FOR_FLOOR_1
-    fraction = (height_mm - _MM_FOR_FLOOR_1) / span_mm
-    return DESIGN_Y_FOR_FLOOR_1 + fraction * (DESIGN_Y_FOR_TOP_FLOOR - DESIGN_Y_FOR_FLOOR_1)
+    """Maps a real-world height (mm, 0 at floor 1) onto the design canvas's y axis."""
+    return SHAFT_BOTTOM_DESIGN_Y - (height_mm + SHAFT_BOTTOM_MARGIN_MM) * MM_TO_DESIGN
 
 
 # ------------------ Persistent top status bar ------------------
@@ -464,20 +490,27 @@ main_panel = Box(controls_box, width="fill", height="fill", layout="auto")
 Text(main_panel, text="Main Controls", color=ACCENT_COLOR, size=12)
 Text(main_panel, text="")  # spacer
 
-# little strip of colored boxes across the top showing which floor is active
-indicator_strip = Box(main_panel, width="fill", height=30, layout="grid")
+# strip of colored boxes showing which floor is active. the strip has a
+# fixed width (instead of "fill") so guizero's auto layout centers it above
+# the floor buttons rather than pinning the boxes to the left edge, and each
+# cell is identical in size so the four floors read as one even row
+INDICATOR_CELL_WIDTH = 58
+INDICATOR_CELL_HEIGHT = 30
+indicator_strip = Box(main_panel, width=INDICATOR_CELL_WIDTH * config.FLOOR_COUNT, height=INDICATOR_CELL_HEIGHT, layout="grid")
 indicator_strip.bg = CARD_BG
 indicator_boxes = {}
 for i in range(1, config.FLOOR_COUNT + 1):
-    b = Box(indicator_strip, width=50, height=25, grid=[i - 1, 0])
+    b = Box(indicator_strip, width=INDICATOR_CELL_WIDTH, height=INDICATOR_CELL_HEIGHT, grid=[i - 1, 0])
     b.bg = "#2d6a4f" if i == config.START_FLOOR else "#3a3a3a"
-    Text(b, text=f"F{i}", size=9, color="white")
+    Text(b, text=f"F{i}", size=10, color="white")
     indicator_boxes[i] = b
 
 Text(main_panel, text="")  # empty spacer so things aren't crammed together
+# floor buttons, ordered top-to-bottom to match the physical shaft (4 highest)
+# and sized generously so they're comfortable to hit on a touchscreen
 floor_buttons = {}
 for i in range(config.FLOOR_COUNT, 0, -1):
-    floor_buttons[i] = _style_button(PushButton(main_panel, text=f"Floor {i}", width=20, command=lambda f=i: go_to_floor(f)))
+    floor_buttons[i] = _style_button(PushButton(main_panel, text=f"Floor {i}", width=22, height=2, command=lambda f=i: go_to_floor(f)))
 Text(main_panel, text="")  # spacer
 status_text = Text(main_panel, text=f"Stopped at floor {config.START_FLOOR}", color="white", size=11)
 Text(main_panel, text="")  # spacer
