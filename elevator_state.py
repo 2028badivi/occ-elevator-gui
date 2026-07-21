@@ -8,28 +8,44 @@
 # without needing an actual screen or an actual Raspberry Pi, which makes
 # testing a lot easier (see test_elevator_state.py).
 
+import math
 import time
 
 import config
 
-# these are basically just pixel coordinates for where each floor is drawn on
-# screen. floor 1 is near the bottom (big y number) and floor 4 is near the
-# top (small y number)
-FLOOR_COORDS = {1: 320, 2: 240, 3: 160, 4: 80}
+# real measured heights (in millimeters, from the SolidWorks model of the
+# actual rig), NOT arbitrary pixel values - floor 1 is the ground reference
+# (0mm) and each floor above it is 254mm higher, matching the real shaft's
+# equal floor-to-floor spacing. this lets the simulated car's position stand
+# in as a trustworthy proxy for the real car's position (e.g. for testing
+# without the IR sensors wired up), since it's now based on the real rig's
+# actual dimensions instead of made-up numbers picked to look OK on screen.
+# gui.py is responsible for mapping these real-world mm values onto actual
+# screen pixels for drawing - this file only ever deals in mm.
+FLOOR_HEIGHTS_MM = {1: 0, 2: 254, 3: 508, 4: 762}
 
-CAR_STEP_PIXELS_PER_TICK_AT_FULL_SPEED = 6.0  # how many pixels the car moves per frame at 100% speed
-CAR_MIN_STEP_PIXELS = 0.5  # even at low speed there should still be SOME movement each frame
-ARRIVAL_TOLERANCE_PIXELS = 1.0  # close enough to the target counts as "arrived"
+# the car's real maximum linear speed, derived from the actual drive
+# hardware: the pulley moves (pi x diameter) mm of cable per revolution, and
+# the shaft tops out at MAX_PULLEY_RPM revolutions per minute. with the real
+# 74mm pulley and the 27 RPM cap that comes out to ~104.6 mm/s. this is the
+# "maximum derivative of height" - step_car() can never move the car faster
+# than this no matter what the speed slider says, so a simulated trip takes
+# the same wall-clock time the real car would.
+PULLEY_CIRCUMFERENCE_MM = math.pi * config.PULLEY_DIAMETER_MM
+MAX_CAR_SPEED_MM_PER_S = (config.MAX_PULLEY_RPM / 60.0) * PULLEY_CIRCUMFERENCE_MM
+
+ARRIVAL_TOLERANCE_MM = 3.0  # close enough to the target counts as "arrived"
 SEQUENCE_STOP_PAUSE_SECONDS = 0.65  # how long to wait at each stop before moving to the next one in a sequence
 
 # instead of running at one constant speed and stopping abruptly, the car
-# ramps up smoothly over the first ACCEL_DISTANCE_PIXELS of a move, cruises
-# at full commanded speed if the move is long enough, then ramps back down
-# over the last DECEL_DISTANCE_PIXELS as it nears the target. for a short
-# hop (like adjacent floors) where the two ramps overlap, it naturally forms
-# a smaller triangular speed profile instead of ever reaching full cruise speed.
-ACCEL_DISTANCE_PIXELS = 25.0
-DECEL_DISTANCE_PIXELS = 25.0
+# ramps up smoothly over the first ACCEL_DISTANCE_MM of a move, cruises at
+# full commanded speed if the move is long enough, then ramps back down over
+# the last DECEL_DISTANCE_MM as it nears the target. for a short hop (like
+# adjacent floors) where the two ramps overlap, it naturally forms a smaller
+# triangular speed profile instead of ever reaching full cruise speed.
+# (these two are tuning values - adjust to taste against the real rig)
+ACCEL_DISTANCE_MM = 80.0
+DECEL_DISTANCE_MM = 80.0
 MIN_SPEED_FRACTION = 0.15  # never ramp all the way down to a dead stop mid-move
 
 
@@ -42,7 +58,7 @@ class ElevatorState:
     def __init__(self):
         self.target_floor = config.START_FLOOR  # the floor currently being targeted
         self.current_floor = config.START_FLOOR  # the floor actually reached so far
-        self.car_y = FLOOR_COORDS[config.START_FLOOR]  # pixel position of the car on screen
+        self.car_y = FLOOR_HEIGHTS_MM[config.START_FLOOR]  # car's height in mm, measured up from floor 1
         self.sequence_queue = []  # floors left to visit if a sequence is running
         self.sequence_mode = False  # True if a sequence is currently running
         self.resume_at = None  # a timestamp for "don't move again until this time" (None = not paused)
@@ -96,15 +112,15 @@ class ElevatorState:
 
     def nearest_floor_to_car(self) -> int:
         # figures out which floor is physically closest to where the car
-        # currently is on screen. used by emergency stop to decide what
-        # counts as the "current" floor after stopping mid-shaft
-        return min(FLOOR_COORDS, key=lambda floor: abs(self.car_y - FLOOR_COORDS[floor]))
+        # actually is right now. used by emergency stop to decide what counts
+        # as the "current" floor after stopping mid-shaft
+        return min(FLOOR_HEIGHTS_MM, key=lambda floor: abs(self.car_y - FLOOR_HEIGHTS_MM[floor]))
 
     def has_arrived(self) -> bool:
         # checks if the car is close enough to the target floor's position to
-        # count as "arrived" (pixel-perfect accuracy isn't needed, within a
-        # pixel or so is plenty good)
-        return abs(self.car_y - FLOOR_COORDS[self.target_floor]) <= ARRIVAL_TOLERANCE_PIXELS
+        # count as "arrived" (millimeter-perfect accuracy isn't needed, being
+        # within a few mm is plenty good)
+        return abs(self.car_y - FLOOR_HEIGHTS_MM[self.target_floor]) <= ARRIVAL_TOLERANCE_MM
 
     def effective_speed_percent(self, speed_percent: int) -> int:
         # applies the accel/decel ramp on top of whatever speed was
@@ -116,31 +132,43 @@ class ElevatorState:
         # in gui.py.
         if speed_percent <= 0:
             return 0
-        target_y = FLOOR_COORDS[self.target_floor]
+        target_y = FLOOR_HEIGHTS_MM[self.target_floor]
         distance_traveled = abs(self.car_y - self._leg_start_y)
         distance_remaining = abs(target_y - self.car_y)
-        accel_fraction = min(1.0, distance_traveled / ACCEL_DISTANCE_PIXELS)
-        decel_fraction = min(1.0, distance_remaining / DECEL_DISTANCE_PIXELS)
+        accel_fraction = min(1.0, distance_traveled / ACCEL_DISTANCE_MM)
+        decel_fraction = min(1.0, distance_remaining / DECEL_DISTANCE_MM)
         ramp_fraction = max(MIN_SPEED_FRACTION, min(accel_fraction, decel_fraction))
         return round(speed_percent * ramp_fraction)
 
-    def step_car(self, speed_percent: int) -> None:
-        # runs once per animation frame and nudges the car's position a
-        # little bit closer to the target floor. speed_percent controls how
-        # big a step is taken each time (bigger speed = bigger steps = looks
-        # like it's moving faster), ramped up/down near the start/end of the
-        # move instead of snapping straight to full speed and stopping abruptly.
-        if self.is_paused() or self.has_arrived() or speed_percent <= 0:
+    def step_car(self, speed_percent: int, dt: float = 1.0 / 60.0) -> None:
+        # advances the car by however far it could really travel in dt
+        # seconds: (speed fraction) x (real max speed) x (elapsed time).
+        # dt is the actual wall-clock time since the previous step, passed in
+        # by the caller (gui.py measures it each tick) - that way the car
+        # moves at true real-world speed regardless of whether the GUI is
+        # ticking at a smooth 60fps or chugging, and the physical speed cap
+        # (MAX_CAR_SPEED_MM_PER_S) is genuinely a mm-per-SECOND limit rather
+        # than a per-frame amount that would drift with frame rate.
+        if self.is_paused() or self.has_arrived() or speed_percent <= 0 or dt <= 0:
             return  # nothing to do if paused, already there, or stopped
-        target_y = FLOOR_COORDS[self.target_floor]
+        target_y = FLOOR_HEIGHTS_MM[self.target_floor]
         ramped_speed_percent = self.effective_speed_percent(speed_percent)
-        step = max(CAR_MIN_STEP_PIXELS, (ramped_speed_percent / 100.0) * CAR_STEP_PIXELS_PER_TICK_AT_FULL_SPEED)
+        step = (ramped_speed_percent / 100.0) * MAX_CAR_SPEED_MM_PER_S * dt
         if self.car_y < target_y:
-            # target is below (bigger y = lower on screen), so move down
+            # target is higher up (bigger mm value = physically higher), so move up
             self.car_y += min(step, target_y - self.car_y)
         else:
-            # target is above, so move up
+            # target is lower, so move down
             self.car_y -= min(step, self.car_y - target_y)
+
+    def trip_progress(self):
+        # how far through the current move the car is, as a 0.0-1.0 fraction
+        # (None when there's no move in progress) - used by the GUI to show a
+        # live "Trip 63%" readout
+        total = abs(FLOOR_HEIGHTS_MM[self.target_floor] - self._leg_start_y)
+        if total <= 0 or self.has_arrived():
+            return None
+        return min(1.0, abs(self.car_y - self._leg_start_y) / total)
 
     def on_arrival(self) -> bool:
         # call this once has_arrived() says True. it updates current_floor

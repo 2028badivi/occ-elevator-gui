@@ -46,6 +46,18 @@ START_FLOOR = 1       # the floor the elevator starts on when the app is launche
 FLOOR_COUNT = 4        # how many floors this elevator has (4 for hospital and residential building)
 DEFAULT_SPEED = 50     # default motor speed out of 100 (like a percentage) when the app opens
 
+# --- Real drive physics ---
+# these two numbers tie the simulation to the real machine: the motor turns
+# a pulley, so the car's linear speed = rotational speed x pulley
+# circumference. with a 74mm pulley at 27 RPM that works out to about
+# 104.6 mm/s max - the simulated car is capped at that same "maximum
+# derivative of height", so a trip in the GUI takes the same time the real
+# car would take.
+PULLEY_DIAMETER_MM = 74
+MAX_PULLEY_RPM = 27  # ASSUMED to be the pulley shaft's output speed - if 27
+                     # is actually the raw motor RPM before a gearbox, divide
+                     # by the gear ratio here
+
 # --- Position potentiometer calibration ---
 # fraction-of-range thresholds (0.0-1.0 - gpiozero's MCP3008.value is already
 # normalized to this range) mapping pot position to a floor. the code walks

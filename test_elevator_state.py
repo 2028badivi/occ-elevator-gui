@@ -14,11 +14,13 @@ import unittest
 
 import config
 from elevator_state import (
-    ACCEL_DISTANCE_PIXELS,
-    DECEL_DISTANCE_PIXELS,
+    ACCEL_DISTANCE_MM,
+    ARRIVAL_TOLERANCE_MM,
+    DECEL_DISTANCE_MM,
+    MAX_CAR_SPEED_MM_PER_S,
     MIN_SPEED_FRACTION,
     ElevatorState,
-    FLOOR_COORDS,
+    FLOOR_HEIGHTS_MM,
 )
 
 
@@ -55,24 +57,43 @@ class ElevatorStateTests(unittest.TestCase):
 
     def test_step_car_moves_toward_target_and_stops_within_tolerance(self):
         # basic sanity check: calling step_car over and over should
-        # eventually get the car to the target floor and stop it there
-        # (capped at 200 loops so a bug can't make this test hang forever)
+        # eventually get the car to the target floor and stop it there.
+        # each step simulates 0.1s of real time (dt=0.1), and the loop cap
+        # of 600 steps = 60 simulated seconds - way more than any real trip
+        # takes, so a bug can't make this test hang forever
         state = ElevatorState()
-        state.target_floor = 4  # coords[4] = 80, which is above coords[1] = 320 (smaller y = higher up)
-        for _ in range(200):
-            state.step_car(speed_percent=50)
+        state.target_floor = 4  # FLOOR_HEIGHTS_MM[4] = 762mm, above FLOOR_HEIGHTS_MM[1] = 0mm (bigger mm = higher up)
+        for _ in range(600):
+            state.step_car(speed_percent=50, dt=0.1)
             if state.has_arrived():
                 break
         self.assertTrue(state.has_arrived())
-        self.assertAlmostEqual(state.car_y, FLOOR_COORDS[4], delta=1.0)
+        self.assertAlmostEqual(state.car_y, FLOOR_HEIGHTS_MM[4], delta=ARRIVAL_TOLERANCE_MM)
 
     def test_step_car_does_nothing_at_zero_speed(self):
         # if speed is 0, the car shouldn't move even a tiny bit
         state = ElevatorState()
         state.target_floor = 4
         start_y = state.car_y
-        state.step_car(speed_percent=0)
+        state.step_car(speed_percent=0, dt=0.1)
         self.assertEqual(state.car_y, start_y)
+
+    def test_step_car_never_exceeds_real_max_speed(self):
+        # THE core physics guarantee: the car's movement per unit time can
+        # never exceed the real drive's capability (pulley circumference x
+        # max RPM), no matter what speed is commanded. this is the "maximum
+        # derivative of height" constraint - one full simulated second at
+        # 100% speed, mid-cruise (no accel/decel ramp in effect), should
+        # move the car exactly the real max speed and not a millimeter more
+        state = ElevatorState()
+        state.set_target(4)
+        state.car_y = 400  # mid-shaft
+        state._leg_start_y = 100  # far enough back that the accel ramp is done
+        before = state.car_y
+        state.step_car(speed_percent=100, dt=1.0)
+        moved = abs(state.car_y - before)
+        self.assertLessEqual(moved, MAX_CAR_SPEED_MM_PER_S + 1e-9)
+        self.assertAlmostEqual(moved, MAX_CAR_SPEED_MM_PER_S, delta=1.0)
 
     def test_effective_speed_is_ramped_down_right_at_leg_start(self):
         # right at the start of a fresh move (distance_traveled == 0), the
@@ -88,22 +109,22 @@ class ElevatorStateTests(unittest.TestCase):
         # from the target, the car should be at full commanded speed (the
         # "cruise" portion of the trip)
         state = ElevatorState()
-        state.set_target(4)  # coords[4] = 80
-        target_y = FLOOR_COORDS[4]
-        # sit comfortably in the middle: far enough from both the start (320)
-        # and the target (80) that neither ramp is in effect
-        state.car_y = 200
-        self.assertGreater(abs(state.car_y - state._leg_start_y), ACCEL_DISTANCE_PIXELS)
-        self.assertGreater(abs(target_y - state.car_y), DECEL_DISTANCE_PIXELS)
+        state.set_target(4)  # FLOOR_HEIGHTS_MM[4] = 762mm
+        target_y = FLOOR_HEIGHTS_MM[4]
+        # sit comfortably in the middle: far enough from both the start (0mm)
+        # and the target (762mm) that neither ramp is in effect
+        state.car_y = 400
+        self.assertGreater(abs(state.car_y - state._leg_start_y), ACCEL_DISTANCE_MM)
+        self.assertGreater(abs(target_y - state.car_y), DECEL_DISTANCE_MM)
         self.assertEqual(state.effective_speed_percent(100), 100)
 
     def test_effective_speed_ramps_down_near_the_target(self):
-        # within DECEL_DISTANCE_PIXELS of the target, speed should be reduced
+        # within DECEL_DISTANCE_MM of the target, speed should be reduced
         # below full but never all the way to zero
         state = ElevatorState()
         state.set_target(4)
-        target_y = FLOOR_COORDS[4]
-        state.car_y = target_y + (DECEL_DISTANCE_PIXELS / 2)  # halfway into the decel zone
+        target_y = FLOOR_HEIGHTS_MM[4]
+        state.car_y = target_y - (DECEL_DISTANCE_MM / 2)  # halfway into the decel zone, still approaching
         ramped = state.effective_speed_percent(100)
         self.assertLess(ramped, 100)
         self.assertGreaterEqual(ramped, round(100 * MIN_SPEED_FRACTION))
@@ -120,8 +141,8 @@ class ElevatorStateTests(unittest.TestCase):
         # confirms the MIN_SPEED_FRACTION floor keeps it making progress
         state = ElevatorState()
         state.set_target(4)
-        for _ in range(400):
-            state.step_car(speed_percent=100)
+        for _ in range(600):
+            state.step_car(speed_percent=100, dt=0.1)
             if state.has_arrived():
                 break
         self.assertTrue(state.has_arrived())
@@ -132,7 +153,7 @@ class ElevatorStateTests(unittest.TestCase):
         # (so it doesn't zoom through instantly)
         state = ElevatorState()
         state.start_sequence([2, 3])
-        state.car_y = FLOOR_COORDS[2]  # simulates the car sitting at floor 2
+        state.car_y = FLOOR_HEIGHTS_MM[2]  # simulates the car sitting at floor 2
         advanced = state.on_arrival()
         self.assertTrue(advanced)
         self.assertEqual(state.current_floor, 2)
@@ -146,15 +167,15 @@ class ElevatorStateTests(unittest.TestCase):
         # starting from wherever the car actually is when that leg begins
         state = ElevatorState()
         state.start_sequence([2, 3])
-        state.car_y = FLOOR_COORDS[2]
+        state.car_y = FLOOR_HEIGHTS_MM[2]
         state.on_arrival()
-        self.assertEqual(state._leg_start_y, FLOOR_COORDS[2])
+        self.assertEqual(state._leg_start_y, FLOOR_HEIGHTS_MM[2])
 
     def test_on_arrival_ends_sequence_when_queue_empty(self):
         # if this was the LAST floor in the sequence, sequence_mode should turn off
         state = ElevatorState()
         state.start_sequence([2])
-        state.car_y = FLOOR_COORDS[2]
+        state.car_y = FLOOR_HEIGHTS_MM[2]
         state.on_arrival()
         self.assertFalse(state.sequence_mode)
 
@@ -168,7 +189,7 @@ class ElevatorStateTests(unittest.TestCase):
     def test_nearest_floor_to_car(self):
         # sanity check that the "closest floor" math finds the right one
         state = ElevatorState()
-        state.car_y = FLOOR_COORDS[3] + 5  # slightly off from floor 3's exact position
+        state.car_y = FLOOR_HEIGHTS_MM[3] + 5  # slightly off from floor 3's exact position
         self.assertEqual(state.nearest_floor_to_car(), 3)
 
     def test_cancel_stops_sequence_and_sets_target(self):

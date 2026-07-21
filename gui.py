@@ -8,10 +8,13 @@
 # from elevator_state.py (for the logic/math) and hardware.py (for the real
 # motor/sensors) and displays whatever they report.
 
+import math
+import time
+
 from guizero import App, Box, Text, PushButton, CheckBox, Slider, Drawing
 
 import config
-from elevator_state import ElevatorState, FLOOR_COORDS
+from elevator_state import ElevatorState, FLOOR_HEIGHTS_MM, MAX_CAR_SPEED_MM_PER_S, PULLEY_CIRCUMFERENCE_MM
 from hardware import HardwareController
 
 # these two objects are basically the "backend" of the whole app - one knows
@@ -20,19 +23,44 @@ hardware = HardwareController()
 state = ElevatorState()
 motor_speed = config.DEFAULT_SPEED  # starts at the default speed until the slider gets moved
 
+# per-tick timing state: glide_step() measures the real elapsed time between
+# ticks and feeds it to the physics (so car speed is true mm-per-second), and
+# tracks the car's live velocity for the on-screen readouts
+_last_tick_time = None
+_velocity_mm_s = 0.0
+
+
+def _set_status(message: str, kind: str = "info") -> None:
+    # one place that sets the status line, with a color per "mood" so the
+    # message reads at a glance: cyan while moving, green when settled,
+    # red for anything alarming (emergency stop / fault)
+    colors = {"info": "white", "moving": "#00bcd4", "ok": "#7bd88f", "danger": "#ff6b6b"}
+    status_text.value = message
+    status_text.text_color = colors[kind]
+
+
+def _refresh_floor_buttons() -> None:
+    # highlights whichever floor button matches the floor currently being
+    # traveled to, so the active destination is visible without reading text
+    for floor, button in floor_buttons.items():
+        is_target = floor == state.target_floor and not state.has_arrived()
+        _style_button(button, "primary" if is_target else "neutral")
+
 
 def go_to_floor(floor: int) -> None:
     # runs whenever one of the "Floor 1/2/3/4" buttons is clicked
     state.set_target(floor)
     hardware.move_toward(floor, state.effective_speed_percent(motor_speed))
-    status_text.value = f"Moving to floor {floor}..."
+    _set_status(f"Moving to floor {floor}...", "moving")
+    _refresh_floor_buttons()
 
 
 def home() -> None:
     # runs when the Home button is clicked, sends the elevator back to the start floor
     state.set_target(config.START_FLOOR)
     hardware.move_toward(config.START_FLOOR, state.effective_speed_percent(motor_speed))
-    status_text.value = f"Going home: floor {config.START_FLOOR}"
+    _set_status(f"Going home: floor {config.START_FLOOR}", "moving")
+    _refresh_floor_buttons()
 
 
 def emergency_stop() -> None:
@@ -42,7 +70,8 @@ def emergency_stop() -> None:
     nearest_floor = state.nearest_floor_to_car()
     state.cancel(nearest_floor)
     hardware.stop()
-    status_text.value = "EMERGENCY STOP - motor halted"
+    _set_status("EMERGENCY STOP - motor halted", "danger")
+    _refresh_floor_buttons()
 
 
 def run_sequence() -> None:
@@ -58,14 +87,17 @@ def run_sequence() -> None:
     state.start_sequence(selected)
     prog_status.value = f"Running: {sorted(selected)}"
     hardware.move_toward(state.target_floor, state.effective_speed_percent(motor_speed))
-    status_text.value = f"Moving to floor {state.target_floor}..."
+    _set_status(f"Moving to floor {state.target_floor}...", "moving")
+    _refresh_floor_buttons()
 
 
 def on_speed_change(value) -> None:
-    # fires every time the speed slider gets dragged
+    # fires every time the speed slider gets dragged. the label shows both
+    # the raw percentage AND what that means in real mm/s, so the number on
+    # screen connects directly to the physical machine
     global motor_speed
     motor_speed = int(value)  # the slider passes its value as a string, so it gets converted to a number
-    speed_label.value = f"Speed: {motor_speed}%"
+    speed_label.value = f"Speed: {motor_speed}%  (~{motor_speed / 100.0 * MAX_CAR_SPEED_MM_PER_S:.0f} mm/s)"
     hardware.move_toward(state.target_floor, state.effective_speed_percent(motor_speed))
 
 
@@ -91,12 +123,19 @@ def _update_sensor_status_bar(presence: dict) -> None:
 def _update_top_bar() -> None:
     # keeps the persistent status strip up to date - this one stays visible
     # no matter which panel (Main/Program/Settings) is currently showing, so
-    # the important live numbers are never hidden by switching tabs
+    # the important live numbers are never hidden by switching tabs. shows
+    # the car's real height and velocity in physical units, plus a live trip
+    # percentage while a move is in progress
     hardware_status = "connected" if hardware.is_gpio else "simulation"
+    progress = state.trip_progress()
+    trip_part = f"   |   Trip {progress * 100:.0f}%" if progress is not None else ""
     top_status_label.value = (
         f"Floor {state.current_floor} -> {state.target_floor}"
+        f"   |   H {state.car_y:.0f}mm"
+        f"   |   v {abs(_velocity_mm_s):.0f}mm/s"
+        f"{trip_part}"
         f"   |   Speed {motor_speed}%"
-        f"   |   Hardware: {hardware_status}"
+        f"   |   HW: {hardware_status}"
     )
 
 
@@ -120,47 +159,86 @@ def draw_simulation() -> None:
     # looks at the current state and draws a picture of it.
     #
     # NOTE: all the numbers below (like 30, 20, 110, 380) are the original
-    # pixel positions this was designed at, back when the canvas was always a
-    # fixed 200x380. now that the canvas size actually changes depending on
-    # the screen (see DRAWING_SCALE near the bottom of this file), every
-    # coordinate gets passed through sc() first, which multiplies it by that
-    # scale factor so everything grows/shrinks together and nothing ends up
-    # squished or floating in the wrong spot. state.car_y and FLOOR_COORDS
-    # themselves are NOT scaled - those stay in the original "logical" units
-    # that elevator_state.py's logic uses; scaling only happens right before
-    # actually drawing things on screen.
+    # design-pixel positions this was laid out at, back when the canvas was
+    # always a fixed 200x380. elevator_state.py now works in real millimeters
+    # (see FLOOR_HEIGHTS_MM), not pixels, so mm_to_design_y() converts a real
+    # height back into that original 0-380 design space first - then sc()
+    # scales THAT up to the real canvas size, same as before. state.car_y and
+    # FLOOR_HEIGHTS_MM themselves are never touched - all the scaling/mapping
+    # happens right here, only for drawing.
     drawing.clear()  # wipe the canvas so everything can be drawn fresh
 
-    # the outer shaft box and the vertical guide rail down the middle
-    drawing.rectangle(sc(30), sc(20), sc(110), sc(380), color="#1e1e1e", outline=True, outline_color="#555555")
-    drawing.line(sc(70), sc(20), sc(70), sc(380), color="#444444")
+    car_design_y = mm_to_design_y(state.car_y)
+    cx, cy = 70, car_design_y
+    car_top_y = cy - 20
 
-    # draw a little beam + light bulb + label for each floor
-    for floor_num, fy in FLOOR_COORDS.items():
-        is_near = abs(state.car_y - fy) <= 15  # is the car close enough to this floor to "light up"
+    # the outer shaft box and a faint guide rail down the middle
+    drawing.rectangle(sc(30), sc(20), sc(110), sc(380), color="#1e1e1e", outline=True, outline_color="#555555")
+    drawing.line(sc(70), sc(20), sc(70), sc(380), color="#333333")
+
+    # the pulley wheel at the top of the shaft. its rotation angle comes
+    # straight from the physics: the car has traveled car_y mm of cable, and
+    # the pulley turns once per circumference of cable - so the wheel on
+    # screen spins exactly in step with how the real 74mm pulley would,
+    # including visibly slowing down through the accel/decel ramps
+    pulley_cx, pulley_cy, pulley_r = 70, 11, 8
+    drawing.oval(
+        sc(pulley_cx - pulley_r), sc(pulley_cy - pulley_r),
+        sc(pulley_cx + pulley_r), sc(pulley_cy + pulley_r),
+        color="#2a2a2a", outline=True, outline_color="#888888",
+    )
+    pulley_angle = (state.car_y / PULLEY_CIRCUMFERENCE_MM) * 2 * math.pi
+    for spoke_angle in (pulley_angle, pulley_angle + math.pi / 2):
+        dx = pulley_r * math.cos(spoke_angle)
+        dy = pulley_r * math.sin(spoke_angle)
+        drawing.line(
+            sc(pulley_cx - dx), sc(pulley_cy - dy),
+            sc(pulley_cx + dx), sc(pulley_cy + dy),
+            color="#888888",
+        )
+
+    # the cable from the pulley down to the top of the car
+    drawing.line(sc(70), sc(pulley_cy + pulley_r), sc(70), sc(car_top_y), color="#999999")
+
+    # draw a little beam + light bulb + label for each floor, with each
+    # floor's real height in mm under its label so the display reads as a
+    # real coordinate system rather than just cartoon floors
+    for floor_num, height_mm in FLOOR_HEIGHTS_MM.items():
+        fy = mm_to_design_y(height_mm)
+        is_near = abs(car_design_y - fy) <= 15  # is the car close enough to this floor to "light up"
         beam_color = "#00FF66" if is_near else "#442222"
         drawing.line(sc(30), sc(fy), sc(110), sc(fy), color=beam_color)
 
         light_color = "#00FF66" if is_near else "#333333"
         drawing.oval(sc(125), sc(fy - 6), sc(137), sc(fy + 6), color=light_color)
 
-        # the beam/bulb already show near vs not-near, so the label text just stays white
-        drawing.text(sc(10), sc(fy - 8), f"F{floor_num}", color="white", size=text_size(9))
+        drawing.text(sc(8), sc(fy - 16), f"F{floor_num}", color="white", size=text_size(9))
+        drawing.text(sc(8), sc(fy - 2), f"{height_mm}", color="#777777", size=text_size(6))
 
-    # draw the elevator car itself as a little box
-    cx, cy = 70, state.car_y
+    # draw the elevator car itself - a box with a door split down the middle
     x1, y1 = cx - 18, cy - 20
     x2, y2 = cx + 18, cy + 20
     car_color = "#00bcd4" if not state.has_arrived() else "#2d6a4f"  # blue while moving, green once stopped
     drawing.rectangle(sc(x1), sc(y1), sc(x2), sc(y2), color=car_color, outline=True, outline_color="white")
+    drawing.line(sc(cx), sc(y1 + 3), sc(cx), sc(y2 - 3), color="#0b3a44")
 
-    # little arrow (or dot if stopped) showing which way the car is heading
+    # little arrow (or dot if stopped) showing which way the car is heading.
+    # comparing the DESIGN-y values (not the raw mm ones) here on purpose -
+    # design-y increases downward same as screen pixels always have, so this
+    # comparison reads the same way it always did regardless of the fact that
+    # real-world mm increases the opposite direction (upward)
     if not state.has_arrived():
-        target_y = FLOOR_COORDS[state.target_floor]
-        dir_char = "▲" if state.car_y > target_y else "▼"
+        target_design_y = mm_to_design_y(FLOOR_HEIGHTS_MM[state.target_floor])
+        dir_char = "▲" if car_design_y > target_design_y else "▼"
         drawing.text(sc(cx - 5), sc(cy - 8), dir_char, color="white", size=text_size(9))
     else:
         drawing.text(sc(cx - 5), sc(cy - 6), "●", color="white", size=text_size(7))
+
+    # live height/velocity readout in the bottom-right corner of the canvas,
+    # in real physical units - this is the "millimeter coordinate system"
+    # view of exactly where the car is and how fast it's moving
+    drawing.text(sc(116), sc(342), f"H: {state.car_y:.0f} mm", color="#9ad5e0", size=text_size(7))
+    drawing.text(sc(116), sc(358), f"v: {abs(_velocity_mm_s):.0f} mm/s", color="#9ad5e0", size=text_size(7))
 
 
 def glide_step() -> None:
@@ -172,6 +250,16 @@ def glide_step() -> None:
     # note: the pot gets read ONCE per tick, through the MCP3008, and that
     # same reading is handed to both get_current_floor() and the diagnostics
     # display, instead of each of them triggering its own separate SPI read
+    global _last_tick_time, _velocity_mm_s
+
+    # measure the REAL elapsed time since the previous tick, so the physics
+    # runs at true wall-clock speed no matter what rate the GUI actually
+    # manages to tick at. capped at 100ms so a one-off hitch (window drag,
+    # system stall) can't teleport the car a huge distance in a single step
+    now = time.monotonic()
+    dt = 1.0 / 60.0 if _last_tick_time is None else min(now - _last_tick_time, 0.1)
+    _last_tick_time = now
+
     pot_reading = hardware.read_potentiometer()
     hardware_floor = hardware.get_current_floor(pot_reading)
     hardware.update_floor_leds(hardware_floor)
@@ -185,26 +273,29 @@ def glide_step() -> None:
         stalled_now = state.note_hardware_target(hardware_floor)
         if stalled_now:
             hardware.stop()
-            status_text.value = f"FAULT: motor stall - floor {state.target_floor} not reached"
+            _set_status(f"FAULT: motor stall - floor {state.target_floor} not reached", "danger")
         elif not state.stalled:
             hardware.move_toward(state.target_floor, state.effective_speed_percent(motor_speed), pot_reading)
 
+    previous_car_y = state.car_y
     if not state.stalled:
         # keeps animating the simulated car UNLESS a stall fault has been flagged
-        state.step_car(motor_speed)
+        state.step_car(motor_speed, dt)
+    _velocity_mm_s = (state.car_y - previous_car_y) / dt if dt > 0 else 0.0
 
     if state.has_arrived() and state.on_arrival():
         # a brand new floor was just reached this frame, so everything updates
         _refresh_indicator()
+        _refresh_floor_buttons()
         if state.sequence_mode:
             # unchecks the box for the floor just visited, and shows the next stop
             if state.current_floor in floor_checkboxes:
                 floor_checkboxes[state.current_floor].value = 0
-            status_text.value = f"On its way to floor {state.target_floor}..."
+            _set_status(f"On its way to floor {state.target_floor}...", "moving")
         elif state.sequence_queue == [] and not state.sequence_mode:
             # sequence is fully done (or this was just a normal single stop)
             prog_status.value = ""
-            status_text.value = f"Stopped at floor {state.current_floor}"
+            _set_status(f"Stopped at floor {state.current_floor}", "ok")
 
     _update_sensor_status_bar(presence)
     _update_diagnostics(pot_reading, ir_readings)
@@ -297,6 +388,26 @@ def text_size(value):
     return value
 
 
+# elevator_state.py works in real millimeters now (floor 1 = 0mm, measuring
+# up from the ground), not pixels. this maps a real height back onto the
+# ORIGINAL 0-380 design-pixel space the drawing was laid out in, so none of
+# draw_simulation()'s actual drawing code has to change - only what feeds
+# into it. 0mm -> design-y 320 (near the bottom of the canvas), and the top
+# floor's real height -> design-y 80 (near the top) - same endpoints the old
+# hardcoded FLOOR_COORDS used to use directly.
+DESIGN_Y_FOR_FLOOR_1 = 320
+DESIGN_Y_FOR_TOP_FLOOR = 80
+_MM_FOR_FLOOR_1 = FLOOR_HEIGHTS_MM[1]
+_MM_FOR_TOP_FLOOR = FLOOR_HEIGHTS_MM[config.FLOOR_COUNT]
+
+
+def mm_to_design_y(height_mm):
+    """Maps a real-world height (mm, 0 at floor 1) onto the drawing's original 0-380 design-pixel space."""
+    span_mm = _MM_FOR_TOP_FLOOR - _MM_FOR_FLOOR_1
+    fraction = (height_mm - _MM_FOR_FLOOR_1) / span_mm
+    return DESIGN_Y_FOR_FLOOR_1 + fraction * (DESIGN_Y_FOR_TOP_FLOOR - DESIGN_Y_FOR_FLOOR_1)
+
+
 # ------------------ Persistent top status bar ------------------
 # stays visible no matter which panel (Main/Program/Settings) is showing, so
 # the live floor/speed/hardware numbers are never hidden by switching tabs
@@ -364,8 +475,9 @@ for i in range(1, config.FLOOR_COUNT + 1):
     indicator_boxes[i] = b
 
 Text(main_panel, text="")  # empty spacer so things aren't crammed together
+floor_buttons = {}
 for i in range(config.FLOOR_COUNT, 0, -1):
-    _style_button(PushButton(main_panel, text=f"Floor {i}", width=20, command=lambda f=i: go_to_floor(f)))
+    floor_buttons[i] = _style_button(PushButton(main_panel, text=f"Floor {i}", width=20, command=lambda f=i: go_to_floor(f)))
 Text(main_panel, text="")  # spacer
 status_text = Text(main_panel, text=f"Stopped at floor {config.START_FLOOR}", color="white", size=11)
 Text(main_panel, text="")  # spacer
@@ -395,10 +507,23 @@ Text(settings_panel, text="Settings", color=ACCENT_COLOR, size=12)
 Text(settings_panel, text="Control the motor speed", color="white", size=11)
 speed_slider = Slider(settings_panel, start=0, end=100, width=300, command=on_speed_change)
 speed_slider.value = config.DEFAULT_SPEED  # starts the slider at the default so it's not just 0 on launch
-speed_label = Text(settings_panel, text=f"Speed: {config.DEFAULT_SPEED}%", color="white", size=10)
+speed_label = Text(
+    settings_panel,
+    text=f"Speed: {config.DEFAULT_SPEED}%  (~{config.DEFAULT_SPEED / 100.0 * MAX_CAR_SPEED_MM_PER_S:.0f} mm/s)",
+    color="white", size=10,
+)
 Text(settings_panel, text="")
-Text(settings_panel, text="[Placeholder for future features]", color="white", size=9)
-Text(settings_panel, text="e.g. acceleration ramp, floor offsets", color="white", size=9)
+# the real physical limits behind the slider, so the % number has meaning
+Text(
+    settings_panel,
+    text=f"Drive limit: {config.MAX_PULLEY_RPM} RPM x {config.PULLEY_DIAMETER_MM}mm pulley",
+    color="#999999", size=9,
+)
+Text(
+    settings_panel,
+    text=f"= {MAX_CAR_SPEED_MM_PER_S:.1f} mm/s max car speed",
+    color="#999999", size=9,
+)
 settings_panel.hide()  # hidden until "Settings" is clicked up top
 
 # ------------------ Right side: little visual elevator simulator ------------------
