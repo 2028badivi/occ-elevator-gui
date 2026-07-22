@@ -158,13 +158,18 @@ def draw_simulation() -> None:
     # every size below comes from a REAL measurement pushed through the same
     # uniform mm->pixel scale, so proportions on screen match the actual rig
     cx = 70  # horizontal center of the shaft on the design canvas
-    car_design_y = mm_to_design_y(state.car_y)
+    # state.car_y (and FLOOR_HEIGHTS_MM) represent the height of the car's
+    # FLOOR, not its center - so the car is drawn sitting ON TOP of that
+    # point (extending upward from it), not straddling it. drawing it
+    # centered on car_y used to make the car float half its own height
+    # above wherever it actually was relative to the floor markers.
+    car_bottom_y = mm_to_design_y(state.car_y)
     car_half_w = mm_len(CAR_WIDTH_MM) / 2
-    car_half_h = mm_len(CAR_HEIGHT_MM) / 2
+    car_top_y = car_bottom_y - mm_len(CAR_HEIGHT_MM)
+    car_center_y = (car_top_y + car_bottom_y) / 2
     shaft_half_w = mm_len(SHAFT_INTERIOR_WIDTH_MM) / 2
     shaft_left = cx - shaft_half_w
     shaft_right = cx + shaft_half_w
-    car_top_y = car_design_y - car_half_h
 
     # the outer shaft box and a faint guide rail down the middle
     drawing.rectangle(
@@ -219,8 +224,8 @@ def draw_simulation() -> None:
 
     # draw the elevator car itself - a box with a door split down the middle,
     # sized on the same real-world scale as the shaft around it
-    x1, y1 = cx - car_half_w, car_design_y - car_half_h
-    x2, y2 = cx + car_half_w, car_design_y + car_half_h
+    x1, y1 = cx - car_half_w, car_top_y
+    x2, y2 = cx + car_half_w, car_bottom_y
     car_color = "#00bcd4" if not state.has_arrived() else "#2d6a4f"  # blue while moving, green once stopped
     drawing.rectangle(sc(x1), sc(y1), sc(x2), sc(y2), color=car_color, outline=True, outline_color="white")
     drawing.line(sc(cx), sc(y1 + 3), sc(cx), sc(y2 - 3), color="#0b3a44")
@@ -232,10 +237,10 @@ def draw_simulation() -> None:
     # real-world mm increases the opposite direction (upward)
     if not state.has_arrived():
         target_design_y = mm_to_design_y(FLOOR_HEIGHTS_MM[state.target_floor])
-        dir_char = "▲" if car_design_y > target_design_y else "▼"
-        drawing.text(sc(cx - 5), sc(car_design_y - 8), dir_char, color="white", size=text_size(9))
+        dir_char = "▲" if car_bottom_y > target_design_y else "▼"
+        drawing.text(sc(cx - 5), sc(car_center_y - 8), dir_char, color="white", size=text_size(9))
     else:
-        drawing.text(sc(cx - 5), sc(car_design_y - 6), "●", color="white", size=text_size(7))
+        drawing.text(sc(cx - 5), sc(car_center_y - 6), "●", color="white", size=text_size(7))
 
     # live height/velocity readout in the bottom-right corner of the canvas,
     # in real physical units - this is the "millimeter coordinate system"
