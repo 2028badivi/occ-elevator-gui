@@ -58,12 +58,14 @@ class ElevatorStateTests(unittest.TestCase):
     def test_step_car_moves_toward_target_and_stops_within_tolerance(self):
         # basic sanity check: calling step_car over and over should
         # eventually get the car to the target floor and stop it there.
-        # each step simulates 0.1s of real time (dt=0.1), and the loop cap
-        # of 600 steps = 60 simulated seconds - way more than any real trip
-        # takes, so a bug can't make this test hang forever
+        # each step simulates 0.1s of real time (dt=0.1). with the real 9:1
+        # gearbox, MAX_CAR_SPEED_MM_PER_S is only ~11mm/s, so a full 762mm
+        # trip takes over a minute - the loop cap of 10000 steps (1000
+        # simulated seconds) leaves plenty of headroom without letting a bug
+        # hang the test forever
         state = ElevatorState()
         state.target_floor = 4  # FLOOR_HEIGHTS_MM[4] = 762mm, above FLOOR_HEIGHTS_MM[1] = 0mm (bigger mm = higher up)
-        for _ in range(600):
+        for _ in range(10000):
             state.step_car(speed_percent=50, dt=0.1)
             if state.has_arrived():
                 break
@@ -141,7 +143,7 @@ class ElevatorStateTests(unittest.TestCase):
         # confirms the MIN_SPEED_FRACTION floor keeps it making progress
         state = ElevatorState()
         state.set_target(4)
-        for _ in range(600):
+        for _ in range(10000):
             state.step_car(speed_percent=100, dt=0.1)
             if state.has_arrived():
                 break

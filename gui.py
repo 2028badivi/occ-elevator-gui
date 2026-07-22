@@ -50,7 +50,7 @@ def _refresh_floor_buttons() -> None:
 def go_to_floor(floor: int) -> None:
     # runs whenever one of the "Floor 1/2/3/4" buttons is clicked
     state.set_target(floor)
-    hardware.move_toward(floor, state.effective_speed_percent(motor_speed))
+    hardware.move_toward(state.direction_to_target(), state.effective_speed_percent(motor_speed))
     _set_status(f"Moving to floor {floor}...", "moving")
     _refresh_floor_buttons()
 
@@ -58,7 +58,7 @@ def go_to_floor(floor: int) -> None:
 def home() -> None:
     # runs when the Home button is clicked, sends the elevator back to the start floor
     state.set_target(config.START_FLOOR)
-    hardware.move_toward(config.START_FLOOR, state.effective_speed_percent(motor_speed))
+    hardware.move_toward(state.direction_to_target(), state.effective_speed_percent(motor_speed))
     _set_status(f"Going home: floor {config.START_FLOOR}", "moving")
     _refresh_floor_buttons()
 
@@ -86,7 +86,7 @@ def run_sequence() -> None:
 
     state.start_sequence(selected)
     prog_status.value = f"Running: {sorted(selected)}"
-    hardware.move_toward(state.target_floor, state.effective_speed_percent(motor_speed))
+    hardware.move_toward(state.direction_to_target(), state.effective_speed_percent(motor_speed))
     _set_status(f"Moving to floor {state.target_floor}...", "moving")
     _refresh_floor_buttons()
 
@@ -98,7 +98,7 @@ def on_speed_change(value) -> None:
     global motor_speed
     motor_speed = int(value)  # the slider passes its value as a string, so it gets converted to a number
     speed_label.value = f"Speed: {motor_speed}%  (~{motor_speed / 100.0 * MAX_CAR_SPEED_MM_PER_S:.0f} mm/s)"
-    hardware.move_toward(state.target_floor, state.effective_speed_percent(motor_speed))
+    hardware.move_toward(state.direction_to_target(), state.effective_speed_percent(motor_speed))
 
 
 def _refresh_indicator() -> None:
@@ -106,18 +106,6 @@ def _refresh_indicator() -> None:
     # "active" right now (green = active floor, gray = not active)
     for floor_num, box in indicator_boxes.items():
         box.bg = "#2d6a4f" if floor_num == state.current_floor else "#3a3a3a"
-
-
-def _update_sensor_status_bar(presence: dict) -> None:
-    # updates the little light + text near the simulator showing whether ANY
-    # of the real IR sensors are currently triggered. this used to be written
-    # in two different places that could disagree with each other, so now
-    # it's just this one function that everything calls.
-    # (the colored light box shows active/inactive, so the text itself just
-    # stays plain white instead of also changing color)
-    active = any(presence.values())
-    sensor_status_light.bg = "#00FF66" if active else "#442222"
-    sensor_status_label.value = "sensor active" if active else "inactive sensor"
 
 
 def _update_top_bar() -> None:
@@ -137,20 +125,6 @@ def _update_top_bar() -> None:
         f"   |   Speed {motor_speed}%"
         f"   |   HW: {hardware_status}"
     )
-
-
-def _update_diagnostics(pot_reading: dict, ir_readings: dict) -> None:
-    # updates the little "Diagnostics" readout with the actual numbers coming
-    # off the sensors, mostly handy for checking things are sane once the
-    # real hardware is wired up. both the pot and (once uncommented) the IR
-    # sensors are read through the same MCP3008 now, so the pot shows a clean
-    # 0-100% straight from the ADC, and IR still shows as ON/off since the
-    # sensors themselves are only ever two-level even though they're read as
-    # an analog value
-    pot_diagnostics_label.value = f"Pot: {pot_reading['fraction'] * 100:.0f}%"
-    ir_diagnostics_label.value = "IR: " + "  ".join(
-        f"F{floor} {'ON' if triggered else 'off'}" for floor, triggered in sorted(ir_readings.items())
-    ) if ir_readings else "IR: (disabled for testing)"
 
 
 def draw_simulation() -> None:
@@ -263,9 +237,12 @@ def glide_step() -> None:
     # runs, it checks the real sensors, moves the simulated car a little bit,
     # checks whether anything arrived, and redraws the picture.
     #
-    # note: the pot gets read ONCE per tick, through the MCP3008, and that
-    # same reading is handed to both get_current_floor() and the diagnostics
-    # display, instead of each of them triggering its own separate SPI read
+    # NOTE: there's no position sensor on the rig (no pot, no MCP3008, no IR),
+    # so this whole loop is open-loop - the simulated car position below is
+    # the only estimate of where the car actually is, and the real motor is
+    # just told to spin the same direction/speed the simulation is using.
+    # that also means there's no way to detect a real stall (jammed motor,
+    # etc) right now - nothing here confirms the real car ever actually moves.
     global _last_tick_time, _velocity_mm_s
 
     # measure the REAL elapsed time since the previous tick, so the physics
@@ -276,27 +253,12 @@ def glide_step() -> None:
     dt = 1.0 / 60.0 if _last_tick_time is None else min(now - _last_tick_time, 0.1)
     _last_tick_time = now
 
-    pot_reading = hardware.read_potentiometer()
-    hardware_floor = hardware.get_current_floor(pot_reading)
-    hardware.update_floor_leds(hardware_floor)
-    presence = hardware.floor_presence()
-    ir_readings = hardware.ir_raw_readings()
-
+    hardware.update_floor_leds(state.current_floor)
     if hardware.is_gpio:
-        # the real motor safety checks only matter if real hardware is
-        # actually hooked up - running the simulation on a laptop means
-        # there's no motor to stall in the first place
-        stalled_now = state.note_hardware_target(hardware_floor)
-        if stalled_now:
-            hardware.stop()
-            _set_status(f"FAULT: motor stall - floor {state.target_floor} not reached", "danger")
-        elif not state.stalled:
-            hardware.move_toward(state.target_floor, state.effective_speed_percent(motor_speed), pot_reading)
+        hardware.move_toward(state.direction_to_target(), state.effective_speed_percent(motor_speed))
 
     previous_car_y = state.car_y
-    if not state.stalled:
-        # keeps animating the simulated car UNLESS a stall fault has been flagged
-        state.step_car(motor_speed, dt)
+    state.step_car(motor_speed, dt)
     _velocity_mm_s = (state.car_y - previous_car_y) / dt if dt > 0 else 0.0
 
     if state.has_arrived() and state.on_arrival():
@@ -313,8 +275,6 @@ def glide_step() -> None:
             prog_status.value = ""
             _set_status(f"Stopped at floor {state.current_floor}", "ok")
 
-    _update_sensor_status_bar(presence)
-    _update_diagnostics(pot_reading, ir_readings)
     _update_top_bar()
     draw_simulation()
 
@@ -561,24 +521,15 @@ settings_panel.hide()  # hidden until "Settings" is clicked up top
 
 # ------------------ Right side: little visual elevator simulator ------------------
 Text(visual_box, text="Simulator", color=ACCENT_COLOR, size=12)
-sensor_status_box = Box(visual_box, width="fill", height=30)
-sensor_status_box.bg = CARD_BG
-sensor_status_light = Box(sensor_status_box, align="left", width=12, height=12)
-sensor_status_light.bg = "#442222"
-sensor_status_label = Text(sensor_status_box, align="left", text="  inactive sensor", color="white", size=9)
 drawing = Drawing(visual_box, width=drawing_width, height=drawing_height)
 
-# little card underneath the shaft drawing showing the raw sensor numbers -
-# mostly useful for debugging/checking calibration once the real hardware is
-# actually wired up, but also just makes the panel look more like a real
-# diagnostics screen instead of only the cartoon shaft
+# little card underneath the shaft drawing - there's no sensor to show
+# readings from right now, so this just reports whether GPIO is available
 diagnostics_box = Box(visual_box, width="fill", height="fill", layout="auto")
 diagnostics_box.bg = CARD_BG
 Text(diagnostics_box, text="")  # spacer
 Text(diagnostics_box, text="Diagnostics", color=ACCENT_COLOR, size=11)  # bumped from 9 to 11 to stay visually distinct now that it's not bold
 hardware_mode_label = Text(diagnostics_box, text="Hardware: --", color="white", size=8)
-pot_diagnostics_label = Text(diagnostics_box, text="Pot: --", color="white", size=8)
-ir_diagnostics_label = Text(diagnostics_box, text="IR: --", color="white", size=8)
 hardware_mode_label.value = "Hardware: connected" if hardware.is_gpio else "Hardware: simulation only"
 
 show_panel("main")  # sets the initial nav tab highlight to match the panel shown by default

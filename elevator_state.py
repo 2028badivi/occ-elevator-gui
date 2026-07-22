@@ -116,6 +116,16 @@ class ElevatorState:
         # as the "current" floor after stopping mid-shaft
         return min(FLOOR_HEIGHTS_MM, key=lambda floor: abs(self.car_y - FLOOR_HEIGHTS_MM[floor]))
 
+    def direction_to_target(self) -> int:
+        # which way the real motor should spin to reach the target: +1 (up),
+        # -1 (down), or 0 if already there. this is the ONLY thing hardware.py
+        # is told about position - there's no sensor on the rig to check this
+        # against, so the simulated car_y here is the sole source of truth.
+        if self.has_arrived():
+            return 0
+        target_y = FLOOR_HEIGHTS_MM[self.target_floor]
+        return 1 if target_y > self.car_y else -1
+
     def has_arrived(self) -> bool:
         # checks if the car is close enough to the target floor's position to
         # count as "arrived" (millimeter-perfect accuracy isn't needed, being

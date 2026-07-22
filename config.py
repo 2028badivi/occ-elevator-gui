@@ -18,30 +18,14 @@
 MOTOR_DIR_PIN = 26   # direction
 MOTOR_PWM_PIN = 12   # speed (PWM)
 
-# potentiometer - read through the MCP3008 ADC, on this channel (0-7)
-MCP3008_POT_CHANNEL = 0
-
 # floor LEDs - one GPIO pin per floor, floor number -> pin number
 FLOOR_LED_PINS = {1: 5, 2: 6, 3: 13, 4: 19}
 
-# IR floor sensors - also read through the MCP3008, one channel per floor.
-# DISABLED FOR NOW: kept commented out here AND in the matching block inside
-# HardwareController.__init__ (hardware.py), so the elevator can be tested on
-# just the pot for position feedback. uncomment BOTH blocks together once
-# ready to bring the IR sensors into the test.
-# IR_SENSOR_MCP3008_CHANNELS = {1: 1, 2: 2, 3: 3, 4: 4}
-
-# MCP3008 <-> Pi SPI wiring - these are fixed by the Pi's hardware SPI0 bus,
-# not something to change unless wiring to a different SPI interface entirely
-# Pi MOSI (GPIO10, physical pin 19) -> MCP3008 DIN  (pin 11)
-# Pi MISO (GPIO9,  physical pin 21) -> MCP3008 DOUT (pin 13)
-# Pi SCLK (GPIO11, physical pin 23) -> MCP3008 CLK  (pin 12)
-# Pi CE0  (GPIO8,  physical pin 24) -> MCP3008 CS   (pin 10)
-# Pi 3.3V -> MCP3008 VDD (pin 16) and VREF (pin 15)
-# Pi GND  -> MCP3008 AGND (pin 14) and DGND (pin 9)
-#
-# pot wiring: one outer leg -> Pi 3.3V, other outer leg -> Pi GND, middle
-# wiper leg -> MCP3008 CH0 (pin 1) - or whichever channel is set above
+# NOTE: there is no position sensor on the rig right now - no potentiometer,
+# no MCP3008, no IR sensors. it's just: power supply -> MD20A -> motor -> Pi
+# for control. that means the app runs fully open-loop: state.py's simulated
+# car position (physics-matched to the real drive) is the ONLY estimate of
+# where the car actually is - nothing here confirms that against reality.
 
 # --- Elevator layout ---
 # these are the preset settings for how many floors there are and where things start
@@ -57,44 +41,11 @@ DEFAULT_SPEED = 50     # default motor speed out of 100 (like a percentage) when
 # the real car would take.
 PULLEY_DIAMETER_MM = 72
 MOTOR_RPM_BEFORE_GEARBOX = 27  # the motor's raw speed cap (confirmed: this is PRE-gearbox)
-GEARBOX_RATIO = 1.0  # TODO: the real gear ratio isn't known yet - the pulley
-                     # spins at motor rpm / this ratio, so 1.0 behaves as
-                     # direct drive until the actual ratio gets filled in
+GEARBOX_RATIO = 9.0  # confirmed: 9:1 gearbox, so the pulley spins at motor rpm / 9
 MAX_PULLEY_RPM = MOTOR_RPM_BEFORE_GEARBOX / GEARBOX_RATIO
 
-# --- Position potentiometer calibration ---
-# fraction-of-range thresholds (0.0-1.0 - gpiozero's MCP3008.value is already
-# normalized to this range) mapping pot position to a floor. the code walks
-# down the list and the first one that matches wins - so if the reading is
-# 0.85 or higher, that's floor 4, and so on down to floor 1 (these numbers
-# are just guesses for now and need to be tested/calibrated later)
-potentiometer_THRESHOLDS = [
-    (0.85, 4),
-    (0.60, 3),
-    (0.35, 2),
-    (0.00, 1),
-]
-
-# --- IR sensor calibration ---
-# each sensor module has its own onboard comparator and really just outputs a
-# plain two-level HIGH/LOW signal, not a true analog range - but reading it
-# through the ADC still means comparing against a threshold rather than
-# treating it as a literal digital value. Long story short we need the ADC to
-# handle the signals and give intermediate values rather than just plain two
-# level signals
-IR_DETECT_THRESHOLD = 0.35  # if the sensor reading is above this, it's considered triggered
-# NOTE: this is basically a guess right now, still needs to be tested with
-# the real sensors once they're wired and uncommented
-
-# whether "detected" means the ADC reading is above or below IR_DETECT_THRESHOLD
-# depends on the exact sensor module, and can't be known for sure until it's
-# actually wired up and tested. Flip to False if it is
-IR_SENSOR_ACTIVE_HIGH = True
-
 # --- Safety ---
-# Tyler's Recommendation
 # this is a safety net in case something breaks, like a sensor dying or a wire
-# coming loose. if the motor is told "go to floor 3" and it NEVER gets
-# confirmation that it arrived within this many seconds, power gets cut
-# instead of letting the motor spin forever (which could break something or overheat)
+# coming loose. currently unused (there's no position sensor on the rig to
+# confirm arrival against), kept here for when one gets added back.
 MOTOR_STALL_TIMEOUT_SECONDS = 8.0  # seconds before giving up and calling it a stall
