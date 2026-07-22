@@ -10,10 +10,13 @@
 # settings that don't need to change just because the wiring changed.
 # ============================================================================
 
-# MD20A motor driver (Cytron, Sign-Magnitude PWM1/PWM2 mode) - each PWM input
-# goes to one of these GPIO pins
-MOTOR_PWM1_FORWARD_PIN = 17   # PWM1 - drives the motor forward/up
-MOTOR_PWM2_REVERSE_PIN = 18   # PWM2 - drives the motor backward/down
+# MD20A motor driver (Cytron, PWM + DIR mode) - one plain digital pin sets
+# direction, one PWM pin sets speed (this replaced the old two-PWM
+# Sign-Magnitude wiring)
+# DIR pin: LOW = forward (up), HIGH = backward (down)
+# PWM pin: duty cycle 0.0-1.0 sets speed, same regardless of direction
+MOTOR_DIR_PIN = 26   # direction
+MOTOR_PWM_PIN = 12   # speed (PWM)
 
 # potentiometer - read through the MCP3008 ADC, on this channel (0-7)
 MCP3008_POT_CHANNEL = 0
@@ -52,7 +55,7 @@ DEFAULT_SPEED = 50     # default motor speed out of 100 (like a percentage) when
 # speed x pulley circumference. the simulated car is capped at that same
 # "maximum derivative of height", so a trip in the GUI takes the same time
 # the real car would take.
-PULLEY_DIAMETER_MM = 74
+PULLEY_DIAMETER_MM = 72
 MOTOR_RPM_BEFORE_GEARBOX = 27  # the motor's raw speed cap (confirmed: this is PRE-gearbox)
 GEARBOX_RATIO = 1.0  # TODO: the real gear ratio isn't known yet - the pulley
                      # spins at motor rpm / this ratio, so 1.0 behaves as

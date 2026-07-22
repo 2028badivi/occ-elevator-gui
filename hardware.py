@@ -18,7 +18,7 @@ try:
     # RPi.GPIO doesn't work reliably on Ubuntu, so this is deliberately NOT
     # hardcoded to a specific backend the way an older PiGPIOFactory-based
     # version of this file used to be)
-    from gpiozero import LED, MCP3008, Motor
+    from gpiozero import LED, MCP3008, DigitalOutputDevice, PWMOutputDevice
     GPIO_AVAILABLE = True
 except Exception:
     # if literally anything goes wrong importing these, just assume no hardware
@@ -32,19 +32,18 @@ class HardwareController:
 
     def __init__(self):
         self.is_gpio = GPIO_AVAILABLE  # flips to False below if setup fails for any reason
-        self.motor = None
+        self.motor_dir = None
+        self.motor_pwm = None
         self.pot = None
         self.ir_sensors = {}
         self.floor_leds = {}
 
         if self.is_gpio:
             try:
-                # set up the motor - forward pin drives it up, backward pin drives it down
-                self.motor = Motor(
-                    forward=config.MOTOR_PWM1_FORWARD_PIN,
-                    backward=config.MOTOR_PWM2_REVERSE_PIN,
-                    pwm=True,
-                )
+                # set up the motor - one digital pin for direction (LOW =
+                # forward/up, HIGH = backward/down), one PWM pin for speed
+                self.motor_dir = DigitalOutputDevice(config.MOTOR_DIR_PIN)
+                self.motor_pwm = PWMOutputDevice(config.MOTOR_PWM_PIN)
                 # one LED object per floor, so each can be turned on/off individually
                 self.floor_leds = {
                     floor: LED(pin)
@@ -184,20 +183,23 @@ class HardwareController:
         # this matters most in glide_step(), which calls this ~60 times a
         # second - without passing pot_reading through, every one of those
         # ticks was quietly doing TWO pot reads instead of one.
-        if not self.is_gpio or self.motor is None:
+        if not self.is_gpio or self.motor_pwm is None:
             return
         current = self.get_current_floor(pot_reading)
         duty = max(0.0, min(1.0, speed / 100.0))
         if target_floor > current:
-            self.motor.forward(duty)
+            self.motor_dir.off()  # LOW = forward = up
+            self.motor_pwm.value = duty
         elif target_floor < current:
-            self.motor.backward(duty)
+            self.motor_dir.on()  # HIGH = backward = down
+            self.motor_pwm.value = duty
         else:
             # already there, so just stop instead of spinning uselessly
             self.stop()
 
     def stop(self) -> None:
         # cuts power to the motor completely, used for normal stops AND for
-        # emergency stop / stall safety
-        if self.is_gpio and self.motor is not None:
-            self.motor.stop()
+        # emergency stop / stall safety - just zeroing the PWM duty is enough,
+        # the DIR pin's state doesn't matter when there's no speed driving it
+        if self.is_gpio and self.motor_pwm is not None:
+            self.motor_pwm.value = 0
