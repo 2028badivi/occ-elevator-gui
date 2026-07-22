@@ -149,6 +149,21 @@ class ElevatorStateTests(unittest.TestCase):
                 break
         self.assertTrue(state.has_arrived())
 
+    def test_calibrate_to_floor_sets_position_without_moving(self):
+        # simulates telling the software "the car is actually at floor 4" on
+        # launch, when it otherwise assumed floor 1. should land exactly on
+        # that floor's height and NOT think it needs to move anywhere.
+        state = ElevatorState()
+        state.start_sequence([2, 3])  # anything running should get cancelled
+        state.calibrate_to_floor(4)
+        self.assertEqual(state.car_y, FLOOR_HEIGHTS_MM[4])
+        self.assertEqual(state.current_floor, 4)
+        self.assertEqual(state.target_floor, 4)
+        self.assertFalse(state.sequence_mode)
+        self.assertEqual(state.sequence_queue, [])
+        self.assertTrue(state.has_arrived())
+        self.assertEqual(state.direction_to_target(), 0)
+
     def test_on_arrival_advances_sequence_queue(self):
         # arriving at the first stop in a sequence should automatically make
         # the next stop the new target, with a brief pause before continuing

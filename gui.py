@@ -63,6 +63,19 @@ def home() -> None:
     _refresh_floor_buttons()
 
 
+def calibrate_to_floor(floor: int) -> None:
+    # tells the software "the car is actually at this floor right now" -
+    # there's no position sensor, so on launch the software otherwise assumes
+    # the car starts at config.START_FLOOR even if the real car is sitting
+    # somewhere else. also stops the motor immediately, since the direction
+    # calc is about to change out from under it.
+    hardware.stop()
+    state.calibrate_to_floor(floor)
+    _set_status(f"Calibrated: now treating floor {floor} as current position", "ok")
+    _refresh_indicator()
+    _refresh_floor_buttons()
+
+
 def emergency_stop() -> None:
     # the big red "stop everything right now" button. figures out whichever
     # floor is closest to where the car currently is and treats that as the
@@ -517,6 +530,15 @@ Text(
     text=f"= {MAX_CAR_SPEED_MM_PER_S:.1f} mm/s max car speed",
     color="#999999", size=9,
 )
+Text(settings_panel, text="")  # spacer
+# there's no position sensor on the rig, so the software has no way to know
+# where the car actually is on launch - it just assumes config.START_FLOOR.
+# these buttons let you tell it "no, it's actually sitting at floor X" so
+# testing (and later, real use) doesn't get confused by a false mismatch
+Text(settings_panel, text="Calibrate current position:", color="white", size=10)
+calibrate_box = Box(settings_panel, width="fill", height=40, layout="auto", align="top")
+for i in range(1, config.FLOOR_COUNT + 1):
+    _style_button(PushButton(calibrate_box, text=f"{i}", width=4, align="left", command=lambda f=i: calibrate_to_floor(f)))
 settings_panel.hide()  # hidden until "Settings" is clicked up top
 
 # ------------------ Right side: little visual elevator simulator ------------------

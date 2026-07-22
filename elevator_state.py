@@ -101,6 +101,21 @@ class ElevatorState:
         self._leg_start_y = self.car_y
         self._clear_fault()
 
+    def calibrate_to_floor(self, floor: int) -> None:
+        # tells the state "the car is actually sitting at this floor right
+        # now." needed because there's no position sensor on the rig - every
+        # time the app launches it otherwise assumes the car starts at
+        # config.START_FLOOR, even if the real car is sitting somewhere else
+        # (e.g. floor 4). sets car_y, current_floor, AND target_floor all to
+        # this floor, so nothing tries to move until a new button is pressed.
+        self.sequence_mode = False
+        self.sequence_queue = []
+        self.car_y = FLOOR_HEIGHTS_MM[floor]
+        self.current_floor = floor
+        self.target_floor = floor
+        self._leg_start_y = self.car_y
+        self._clear_fault()
+
     def cancel(self, floor: int) -> None:
         # used by the emergency stop button - stops any sequence and just
         # treats wherever the car currently is as the new target
