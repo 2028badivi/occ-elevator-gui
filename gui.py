@@ -158,14 +158,14 @@ def draw_simulation() -> None:
     # every size below comes from a REAL measurement pushed through the same
     # uniform mm->pixel scale, so proportions on screen match the actual rig
     cx = 70  # horizontal center of the shaft on the design canvas
-    # state.car_y (and FLOOR_HEIGHTS_MM) represent the height of the car's
-    # FLOOR, not its center - so the car is drawn sitting ON TOP of that
-    # point (extending upward from it), not straddling it. drawing it
-    # centered on car_y used to make the car float half its own height
-    # above wherever it actually was relative to the floor markers.
-    car_bottom_y = mm_to_design_y(state.car_y)
+    # state.car_y (and FLOOR_HEIGHTS_MM) mark CAR_FLOOR_REFERENCE_FRACTION of
+    # the way down the car body, not one of its edges - so the car is drawn
+    # straddling that point at that specific fraction, not centered on it or
+    # sitting fully above/below it.
+    car_ref_y = mm_to_design_y(state.car_y)
     car_half_w = mm_len(CAR_WIDTH_MM) / 2
-    car_top_y = car_bottom_y - mm_len(CAR_HEIGHT_MM)
+    car_top_y = car_ref_y - mm_len(CAR_HEIGHT_MM * CAR_FLOOR_REFERENCE_FRACTION)
+    car_bottom_y = car_ref_y + mm_len(CAR_HEIGHT_MM * (1 - CAR_FLOOR_REFERENCE_FRACTION))
     car_center_y = (car_top_y + car_bottom_y) / 2
     shaft_half_w = mm_len(SHAFT_INTERIOR_WIDTH_MM) / 2
     shaft_left = cx - shaft_half_w
@@ -237,7 +237,7 @@ def draw_simulation() -> None:
     # real-world mm increases the opposite direction (upward)
     if not state.has_arrived():
         target_design_y = mm_to_design_y(FLOOR_HEIGHTS_MM[state.target_floor])
-        dir_char = "▲" if car_bottom_y > target_design_y else "▼"
+        dir_char = "▲" if car_ref_y > target_design_y else "▼"
         drawing.text(sc(cx - 5), sc(car_center_y - 8), dir_char, color="white", size=text_size(9))
     else:
         drawing.text(sc(cx - 5), sc(car_center_y - 6), "●", color="white", size=text_size(7))
@@ -395,6 +395,12 @@ SHAFT_TOP_MARGIN_MM = 43      # shaft continues this far above the top floor
 SHAFT_INTERIOR_WIDTH_MM = 95  # real interior width of the shaft
 CAR_WIDTH_MM = 80             # display size of the car (approximate)
 CAR_HEIGHT_MM = 100           # display size of the car (approximate)
+
+# state.car_y (and FLOOR_HEIGHTS_MM) mark a reference point ON the car body,
+# not one of its edges - confirmed by eye against the real rig as sitting a
+# little above the car's actual vertical middle. 0.0 would put the reference
+# at the very top of the car, 1.0 at the very bottom, 0.5 dead center.
+CAR_FLOOR_REFERENCE_FRACTION = 0.4
 
 SHAFT_TOP_DESIGN_Y = 40       # where the shaft interior starts on the design canvas
 SHAFT_BOTTOM_DESIGN_Y = 372   # where it ends (leaves room for the pulley above)
