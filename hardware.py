@@ -24,8 +24,12 @@ try:
     # version of this file used to be)
     from gpiozero import LED, DigitalOutputDevice, PWMOutputDevice
     GPIO_AVAILABLE = True
-except Exception:
-    # if literally anything goes wrong importing these, just assume no hardware
+except Exception as exc:
+    # if literally anything goes wrong importing these, just assume no
+    # hardware - but print WHY, since a silent failure here (missing lgpio,
+    # no permission on /dev/gpiochip0, etc) looks identical to "not on a Pi"
+    # otherwise and is impossible to debug without seeing the real error
+    print(f"[hardware] gpiozero import failed, falling back to simulation-only mode: {exc}")
     GPIO_AVAILABLE = False
 
 
