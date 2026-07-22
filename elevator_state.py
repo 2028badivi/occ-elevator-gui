@@ -117,11 +117,18 @@ class ElevatorState:
         self._clear_fault()
 
     def cancel(self, floor: int) -> None:
-        # used by the emergency stop button - stops any sequence and just
-        # treats wherever the car currently is as the new target
+        # used by the emergency stop button - stops any sequence and treats
+        # the nearest floor as the new target. car_y gets snapped to that
+        # floor's exact height (not just left wherever it happened to be)
+        # so has_arrived() is immediately true and direction_to_target()
+        # returns 0 - otherwise, if the car wasn't within ARRIVAL_TOLERANCE_MM
+        # of that floor already, the very next glide_step tick would see
+        # "not arrived yet" and immediately re-command the motor, undoing
+        # the stop (this is what was causing the jerking after pressing it)
         self.sequence_mode = False
         self.sequence_queue = []
         self.target_floor = floor
+        self.car_y = FLOOR_HEIGHTS_MM[floor]
         self._leg_start_y = self.car_y
         self._clear_fault()
 

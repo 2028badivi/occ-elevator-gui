@@ -210,12 +210,17 @@ class ElevatorStateTests(unittest.TestCase):
         self.assertEqual(state.nearest_floor_to_car(), 3)
 
     def test_cancel_stops_sequence_and_sets_target(self):
-        # emergency stop behavior: cancel() should kill any running sequence
-        # and just set a plain target floor instead
+        # emergency stop behavior: cancel() should kill any running sequence,
+        # set a plain target floor, and snap car_y to that floor's exact
+        # height so the stop actually sticks (see the comment in cancel()
+        # about the jerking bug this prevents)
         state = ElevatorState()
         state.start_sequence([2, 4])
         state.cancel(1)
         self.assertEqual(state.target_floor, 1)
+        self.assertEqual(state.car_y, FLOOR_HEIGHTS_MM[1])
+        self.assertTrue(state.has_arrived())
+        self.assertEqual(state.direction_to_target(), 0)
         self.assertFalse(state.sequence_mode)
         self.assertEqual(state.sequence_queue, [])
 

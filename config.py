@@ -41,7 +41,7 @@ DEFAULT_SPEED = 50     # default motor speed out of 100 (like a percentage) when
 # the real car would take.
 PULLEY_DIAMETER_MM = 72
 MOTOR_RPM_BEFORE_GEARBOX = 27  # the motor's raw speed cap (confirmed: this is PRE-gearbox)
-GEARBOX_RATIO = 9.0  # confirmed: 9:1 gearbox, so the pulley spins at motor rpm / 9
+GEARBOX_RATIO = 1.0  # confirmed: 1:1 - the pulley spins at the raw motor rpm, no reduction
 MAX_PULLEY_RPM = MOTOR_RPM_BEFORE_GEARBOX / GEARBOX_RATIO
 
 # --- Safety ---
