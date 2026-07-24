@@ -44,38 +44,53 @@ MOTOR_RPM_BEFORE_GEARBOX = 27  # the motor's raw speed cap (confirmed: this is P
 GEARBOX_RATIO = 1.0  # confirmed: 1:1 - the pulley spins at the raw motor rpm, no reduction
 MAX_PULLEY_RPM = MOTOR_RPM_BEFORE_GEARBOX / GEARBOX_RATIO
 
-# --- Motor deadband compensation ---
-# DC motors (especially driven through a gearbox) usually need a minimum
-# duty cycle just to overcome static friction and actually start turning -
-# below that "deadband," real speed does NOT scale linearly with commanded
-# duty the way a naive (speed_percent / 100 = duty) model assumes. this
-# matches what was seen on the real rig: matching the simulated car to the
-# real one got LESS accurate at lower speed slider settings (76% was most
-# accurate; lower settings drifted), which is exactly what an unmodeled
-# deadband looks like.
+# --- Motor duty-to-real-speed calibration ---
+# real DC motors (especially through a gearbox, driven by the MD20A) don't
+# actually move at a speed that's linearly proportional to commanded PWM
+# duty - there's a deadband at the low end (needs a minimum duty just to
+# overcome static friction) AND the real top speed under load can fall short
+# of the theoretical max at the high end (voltage drop, current limiting,
+# gearbox drag), so BOTH ends can drift off a straight-line assumption, each
+# in its own direction.
 #
-# this value is a starting guess, not measured off the real motor - if trips
-# still don't match reality at low speed settings, nudge it up (more of the
-# low end gets pulled toward MOTOR_MIN_DUTY_FRACTION) or down (closer to the
-# old straight-line assumption) and re-test.
-MOTOR_MIN_DUTY_FRACTION = 0.3
+# rather than guess a single formula for that whole curve, this is a small
+# table of (commanded fraction -> real duty fraction) points, built up from
+# actual testing against the real rig: 70-80% commanded was confirmed
+# accurate (kept as an identity mapping below), while settings outside that
+# range under/overshot. the two end points are still guesses - as more speed
+# settings get tested, add/adjust points here rather than editing a formula.
+# anything between two points is interpolated in a straight line; commanded
+# fractions past the table's first/last point just hold that end's value.
+MOTOR_DUTY_CALIBRATION_POINTS = [
+    (0.0, 0.0),
+    (0.3, 0.4),   # guess: below the confirmed-accurate zone undershot, so boost it
+    (0.7, 0.7),   # confirmed accurate
+    (0.8, 0.8),   # confirmed accurate
+    (1.0, 0.85),  # guess: above the confirmed-accurate zone overshot, so pull it back
+]
 
 
 def effective_duty_fraction(commanded_fraction: float) -> float:
     # maps a commanded speed fraction (0.0-1.0, from the speed slider and the
-    # accel/decel ramp) onto the real duty cycle sent to the motor. any
-    # positive commanded speed gets boosted up to at least
-    # MOTOR_MIN_DUTY_FRACTION - enough real duty to actually overcome the
-    # deadband and turn the motor - then scales up linearly from there to
-    # full duty at a fully-commanded speed.
+    # accel/decel ramp) onto the real duty cycle sent to the motor, by
+    # linearly interpolating MOTOR_DUTY_CALIBRATION_POINTS.
     #
     # used by BOTH hardware.py (the actual PWM duty sent to the MD20A) and
     # elevator_state.py (the simulated car's speed), so the simulation and
-    # the real motor stay in sync instead of the simulation assuming a
-    # straight line the real motor doesn't actually follow.
+    # the real motor stay in sync at whatever speed is commanded, instead of
+    # the simulation assuming a straight line the real motor doesn't follow.
     if commanded_fraction <= 0:
         return 0.0
-    return MOTOR_MIN_DUTY_FRACTION + commanded_fraction * (1 - MOTOR_MIN_DUTY_FRACTION)
+    points = MOTOR_DUTY_CALIBRATION_POINTS
+    if commanded_fraction <= points[0][0]:
+        return points[0][1]
+    if commanded_fraction >= points[-1][0]:
+        return points[-1][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x0 <= commanded_fraction <= x1:
+            fraction_between = (commanded_fraction - x0) / (x1 - x0)
+            return y0 + fraction_between * (y1 - y0)
+    return points[-1][1]  # unreachable, just a safe fallback
 
 # --- Safety ---
 # this is a safety net in case something breaks, like a sensor dying or a wire

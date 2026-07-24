@@ -82,11 +82,14 @@ class ElevatorStateTests(unittest.TestCase):
 
     def test_step_car_never_exceeds_real_max_speed(self):
         # THE core physics guarantee: the car's movement per unit time can
-        # never exceed the real drive's capability (pulley circumference x
-        # max RPM), no matter what speed is commanded. this is the "maximum
-        # derivative of height" constraint - one full simulated second at
-        # 100% speed, mid-cruise (no accel/decel ramp in effect), should
-        # move the car exactly the real max speed and not a millimeter more
+        # never exceed the real drive's theoretical capability (pulley
+        # circumference x max RPM), no matter what speed is commanded - this
+        # is the "maximum derivative of height" constraint. note that a
+        # fully-commanded (100%) speed does NOT necessarily mean the car
+        # moves at exactly that theoretical max - see the duty calibration
+        # table in config.py, confirmed by real testing to pull back near
+        # the top end (the real motor falls short of the theoretical max
+        # under load there)
         state = ElevatorState()
         state.set_target(4)
         state.car_y = 400  # mid-shaft
@@ -95,7 +98,8 @@ class ElevatorStateTests(unittest.TestCase):
         state.step_car(speed_percent=100, dt=1.0)
         moved = abs(state.car_y - before)
         self.assertLessEqual(moved, MAX_CAR_SPEED_MM_PER_S + 1e-9)
-        self.assertAlmostEqual(moved, MAX_CAR_SPEED_MM_PER_S, delta=1.0)
+        expected = config.effective_duty_fraction(1.0) * MAX_CAR_SPEED_MM_PER_S
+        self.assertAlmostEqual(moved, expected, delta=1.0)
 
     def test_effective_speed_is_ramped_down_right_at_leg_start(self):
         # right at the start of a fresh move (distance_traveled == 0), the
@@ -168,32 +172,41 @@ class ElevatorStateTests(unittest.TestCase):
         # a commanded speed of exactly 0 should never get boosted into motion
         self.assertEqual(config.effective_duty_fraction(0), 0.0)
 
-    def test_effective_duty_fraction_full_speed_is_unboosted(self):
-        # 100% commanded should still be 100% duty, deadband or not
-        self.assertEqual(config.effective_duty_fraction(1.0), 1.0)
+    def test_effective_duty_fraction_is_identity_in_the_confirmed_accurate_zone(self):
+        # 70-80% commanded was confirmed accurate against the real rig, so
+        # the calibration table should pass those through unchanged
+        self.assertAlmostEqual(config.effective_duty_fraction(0.7), 0.7)
+        self.assertAlmostEqual(config.effective_duty_fraction(0.8), 0.8)
 
-    def test_effective_duty_fraction_boosts_low_commanded_speeds(self):
-        # any positive commanded speed should get pulled up to at least
-        # MOTOR_MIN_DUTY_FRACTION of real duty, since that's the whole point
-        # of the deadband compensation
-        boosted = config.effective_duty_fraction(0.1)
-        self.assertGreaterEqual(boosted, config.MOTOR_MIN_DUTY_FRACTION)
-        self.assertLess(boosted, 1.0)
+    def test_effective_duty_fraction_boosts_below_the_accurate_zone(self):
+        # below 70%, real testing showed undershoot, so the table should
+        # boost commanded speed up (real duty > commanded fraction there)
+        self.assertGreater(config.effective_duty_fraction(0.3), 0.3)
+
+    def test_effective_duty_fraction_pulls_back_above_the_accurate_zone(self):
+        # above 80%, real testing showed overshoot, so the table should pull
+        # commanded speed back down (real duty < commanded fraction there)
+        self.assertLess(config.effective_duty_fraction(1.0), 1.0)
+
+    def test_effective_duty_fraction_interpolates_between_table_points(self):
+        # a commanded fraction halfway between two table points should land
+        # halfway between those points' real-duty values
+        halfway_point = config.effective_duty_fraction(0.5)  # halfway between the (0.3, 0.4) and (0.7, 0.7) points
+        self.assertAlmostEqual(halfway_point, 0.55)
 
     def test_step_car_at_low_speed_moves_further_than_naive_linear_model(self):
-        # confirms step_car() is actually using the deadband-compensated
-        # duty, not the raw commanded percentage - a low commanded speed
-        # should move the car MORE than a plain (speed/100) x max_speed x dt
-        # calculation would, since the real motor needs more than that to
-        # actually turn
+        # confirms step_car() is actually using the calibrated duty, not the
+        # raw commanded percentage - a low commanded speed (in the boosted
+        # part of the table) should move the car MORE than a plain
+        # (speed/100) x max_speed x dt calculation would
         state = ElevatorState()
         state.set_target(4)
         state.car_y = 400  # mid-shaft, ramps are not in effect here
         state._leg_start_y = 100
         before = state.car_y
-        state.step_car(speed_percent=10, dt=1.0)
+        state.step_car(speed_percent=30, dt=1.0)
         moved = abs(state.car_y - before)
-        naive_linear_move = 0.10 * MAX_CAR_SPEED_MM_PER_S
+        naive_linear_move = 0.30 * MAX_CAR_SPEED_MM_PER_S
         self.assertGreater(moved, naive_linear_move)
 
     def test_on_arrival_advances_sequence_queue(self):
