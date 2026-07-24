@@ -13,16 +13,16 @@ import time
 
 import config
 
-# real measured heights (in millimeters, from the SolidWorks model of the
-# actual rig), NOT arbitrary pixel values - floor 1 is the ground reference
-# (0mm) and each floor above it is 254mm higher, matching the real shaft's
-# equal floor-to-floor spacing. this lets the simulated car's position stand
-# in as a trustworthy proxy for the real car's position (e.g. for testing
-# without the IR sensors wired up), since it's now based on the real rig's
-# actual dimensions instead of made-up numbers picked to look OK on screen.
-# gui.py is responsible for mapping these real-world mm values onto actual
-# screen pixels for drawing - this file only ever deals in mm.
-FLOOR_HEIGHTS_MM = {1: 0, 2: 254, 3: 508, 4: 762}
+# real measured heights (in millimeters, from the actual rig), NOT arbitrary
+# pixel values - floor 1 is the ground reference (0mm) and each floor above
+# it is 324mm higher, matching the real shaft's equal floor-to-floor spacing
+# (corrected from an earlier 254mm estimate). this lets the simulated car's
+# position stand in as a trustworthy proxy for the real car's position (e.g.
+# for testing without a position sensor wired up), since it's based on the
+# real rig's actual dimensions instead of made-up numbers picked to look OK
+# on screen. gui.py is responsible for mapping these real-world mm values
+# onto actual screen pixels for drawing - this file only ever deals in mm.
+FLOOR_HEIGHTS_MM = {1: 0, 2: 324, 3: 648, 4: 972}
 
 # the car's real maximum linear speed, derived from the actual drive
 # hardware: the pulley moves (pi x diameter) mm of cable per revolution, and
