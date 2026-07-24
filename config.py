@@ -56,29 +56,40 @@ MAX_PULLEY_RPM = MOTOR_RPM_BEFORE_GEARBOX / GEARBOX_RATIO
 # rather than guess a single formula for that whole curve, this is a small
 # table of (commanded fraction -> real duty fraction) points, built up from
 # actual testing against the real rig: 70-80% commanded was confirmed
-# accurate (kept as an identity mapping below), while settings outside that
-# range under/overshot. the two end points are still guesses - as more speed
-# settings get tested, add/adjust points here rather than editing a formula.
-# anything between two points is interpolated in a straight line; commanded
-# fractions past the table's first/last point just hold that end's value.
+# accurate (kept as an identity mapping below). the 0.22 and 0.42 points were
+# corrected from real overshoot measurements - commanding 22% overshot the
+# target by 10% of a car length, and 42% overshot by 33% - by solving for
+# the duty that would have made the real motor's speed actually match the
+# commanded fraction (see the git history for the full derivation). the
+# fixed-point math assumes the real motor's response is roughly locally
+# linear near each tested value, so treat these as good estimates to refine
+# further, not exact - if trips still don't match at these settings, redo
+# the same math with the new measured gap and update the point here. the
+# 1.0 point is still an untested guess (no real overshoot/undershoot data at
+# that setting yet). anything between two points is interpolated in a
+# straight line; commanded fractions past the table's first/last point just
+# hold that end's value.
 MOTOR_DUTY_CALIBRATION_POINTS = [
     (0.0, 0.0),
-    (0.3, 0.4),   # guess: below the confirmed-accurate zone undershot, so boost it
-    (0.7, 0.7),   # confirmed accurate
-    (0.8, 0.8),   # confirmed accurate
-    (1.0, 0.85),  # guess: above the confirmed-accurate zone overshot, so pull it back
+    (0.22, 0.284),  # corrected from a measured 10% overshoot at commanded 0.22
+    (0.42, 0.445),  # corrected from a measured 33% overshoot at commanded 0.42
+    (0.7, 0.7),     # confirmed accurate
+    (0.8, 0.8),     # confirmed accurate
+    (1.0, 0.85),    # still an untested guess
 ]
 
 
 def effective_duty_fraction(commanded_fraction: float) -> float:
     # maps a commanded speed fraction (0.0-1.0, from the speed slider and the
-    # accel/decel ramp) onto the real duty cycle sent to the motor, by
-    # linearly interpolating MOTOR_DUTY_CALIBRATION_POINTS.
+    # accel/decel ramp) onto the real duty cycle actually sent to the motor,
+    # by linearly interpolating MOTOR_DUTY_CALIBRATION_POINTS.
     #
-    # used by BOTH hardware.py (the actual PWM duty sent to the MD20A) and
-    # elevator_state.py (the simulated car's speed), so the simulation and
-    # the real motor stay in sync at whatever speed is commanded, instead of
-    # the simulation assuming a straight line the real motor doesn't follow.
+    # used ONLY by hardware.py (the real PWM duty sent to the MD20A) - NOT
+    # by elevator_state.py. the simulated car represents the INTENDED
+    # behavior (commanded speed % = that % of max speed); this curve exists
+    # purely to make the REAL motor match that intent despite not responding
+    # linearly to duty. applying it to the simulation too would double-count
+    # the correction (this was a real bug - see git history).
     if commanded_fraction <= 0:
         return 0.0
     points = MOTOR_DUTY_CALIBRATION_POINTS

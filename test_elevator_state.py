@@ -185,15 +185,15 @@ class ElevatorStateTests(unittest.TestCase):
         self.assertGreater(config.effective_duty_fraction(0.3), 0.3)
 
     def test_effective_duty_fraction_pulls_back_above_the_accurate_zone(self):
-        # above 80%, real testing showed overshoot, so the table should pull
-        # commanded speed back down (real duty < commanded fraction there)
+        # above 80%, the table pulls commanded speed back down (still an
+        # untested guess, not yet confirmed against the real rig)
         self.assertLess(config.effective_duty_fraction(1.0), 1.0)
 
     def test_effective_duty_fraction_interpolates_between_table_points(self):
         # a commanded fraction halfway between two table points should land
         # halfway between those points' real-duty values
-        halfway_point = config.effective_duty_fraction(0.5)  # halfway between the (0.3, 0.4) and (0.7, 0.7) points
-        self.assertAlmostEqual(halfway_point, 0.55)
+        halfway_point = config.effective_duty_fraction(0.32)  # halfway between the (0.22, 0.284) and (0.42, 0.445) points
+        self.assertAlmostEqual(halfway_point, (0.284 + 0.445) / 2)
 
     def test_step_car_ignores_duty_calibration_and_uses_commanded_speed_directly(self):
         # step_car() represents the INTENDED behavior (commanded speed % =
