@@ -82,14 +82,16 @@ class ElevatorStateTests(unittest.TestCase):
 
     def test_step_car_never_exceeds_real_max_speed(self):
         # THE core physics guarantee: the car's movement per unit time can
-        # never exceed the real drive's theoretical capability (pulley
-        # circumference x max RPM), no matter what speed is commanded - this
-        # is the "maximum derivative of height" constraint. note that a
-        # fully-commanded (100%) speed does NOT necessarily mean the car
-        # moves at exactly that theoretical max - see the duty calibration
-        # table in config.py, confirmed by real testing to pull back near
-        # the top end (the real motor falls short of the theoretical max
-        # under load there)
+        # never exceed the real drive's capability (pulley circumference x
+        # max RPM), no matter what speed is commanded. this is the "maximum
+        # derivative of height" constraint - one full simulated second at
+        # 100% speed, mid-cruise (no accel/decel ramp in effect), should
+        # move the car exactly the real max speed and not a millimeter more.
+        # note this deliberately does NOT go through
+        # config.effective_duty_fraction() - the simulated car represents
+        # the INTENDED behavior (commanded speed % = that % of max speed);
+        # the duty calibration table only corrects what's actually SENT to
+        # the real motor (see hardware.move_toward()) to try to match that.
         state = ElevatorState()
         state.set_target(4)
         state.car_y = 400  # mid-shaft
@@ -98,8 +100,7 @@ class ElevatorStateTests(unittest.TestCase):
         state.step_car(speed_percent=100, dt=1.0)
         moved = abs(state.car_y - before)
         self.assertLessEqual(moved, MAX_CAR_SPEED_MM_PER_S + 1e-9)
-        expected = config.effective_duty_fraction(1.0) * MAX_CAR_SPEED_MM_PER_S
-        self.assertAlmostEqual(moved, expected, delta=1.0)
+        self.assertAlmostEqual(moved, MAX_CAR_SPEED_MM_PER_S, delta=1.0)
 
     def test_effective_speed_is_ramped_down_right_at_leg_start(self):
         # right at the start of a fresh move (distance_traveled == 0), the
@@ -194,11 +195,13 @@ class ElevatorStateTests(unittest.TestCase):
         halfway_point = config.effective_duty_fraction(0.5)  # halfway between the (0.3, 0.4) and (0.7, 0.7) points
         self.assertAlmostEqual(halfway_point, 0.55)
 
-    def test_step_car_at_low_speed_moves_further_than_naive_linear_model(self):
-        # confirms step_car() is actually using the calibrated duty, not the
-        # raw commanded percentage - a low commanded speed (in the boosted
-        # part of the table) should move the car MORE than a plain
-        # (speed/100) x max_speed x dt calculation would
+    def test_step_car_ignores_duty_calibration_and_uses_commanded_speed_directly(self):
+        # step_car() represents the INTENDED behavior (commanded speed % =
+        # that % of max speed) - it should NOT be affected by
+        # config.effective_duty_fraction(), which only exists to correct
+        # what's actually sent to the real motor. a commanded speed should
+        # move the car at EXACTLY that fraction of max speed, not a
+        # calibration-adjusted one.
         state = ElevatorState()
         state.set_target(4)
         state.car_y = 400  # mid-shaft, ramps are not in effect here
@@ -206,8 +209,8 @@ class ElevatorStateTests(unittest.TestCase):
         before = state.car_y
         state.step_car(speed_percent=30, dt=1.0)
         moved = abs(state.car_y - before)
-        naive_linear_move = 0.30 * MAX_CAR_SPEED_MM_PER_S
-        self.assertGreater(moved, naive_linear_move)
+        expected = 0.30 * MAX_CAR_SPEED_MM_PER_S
+        self.assertAlmostEqual(moved, expected, delta=1e-6)
 
     def test_on_arrival_advances_sequence_queue(self):
         # arriving at the first stop in a sequence should automatically make

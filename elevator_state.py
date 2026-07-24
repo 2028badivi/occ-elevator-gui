@@ -185,13 +185,16 @@ class ElevatorState:
             return  # nothing to do if paused, already there, or stopped
         target_y = FLOOR_HEIGHTS_MM[self.target_floor]
         ramped_speed_percent = self.effective_speed_percent(speed_percent)
-        # config.effective_duty_fraction() applies the same motor-deadband
-        # compensation used for the real motor's PWM duty (see
-        # hardware.move_toward()), so the simulated car's speed tracks what
-        # the real motor actually does at low commanded speeds instead of
-        # assuming a straight line the real motor doesn't follow
-        duty_fraction = config.effective_duty_fraction(ramped_speed_percent / 100.0)
-        step = duty_fraction * MAX_CAR_SPEED_MM_PER_S * dt
+        # NOTE: this deliberately does NOT go through
+        # config.effective_duty_fraction() - that curve exists to compensate
+        # the REAL motor (see hardware.move_toward()) so it actually achieves
+        # the commanded speed, despite not responding linearly to duty. The
+        # simulated car should represent the INTENDED behavior (commanded
+        # speed % = that % of max speed), which is exactly what the
+        # calibration curve is trying to make the real motor match - using
+        # the calibrated value here too double-applies the correction and
+        # was making the drift WORSE at less-calibrated speeds, not better.
+        step = (ramped_speed_percent / 100.0) * MAX_CAR_SPEED_MM_PER_S * dt
         if self.car_y < target_y:
             # target is higher up (bigger mm value = physically higher), so move up
             self.car_y += min(step, target_y - self.car_y)
