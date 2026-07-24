@@ -88,7 +88,11 @@ class HardwareController:
         if direction == 0:
             self.stop()
             return
-        duty = max(0.0, min(1.0, speed / 100.0))
+        # config.effective_duty_fraction() boosts low commanded speeds up to
+        # a minimum real duty cycle, since the motor needs a minimum duty
+        # just to overcome static friction and actually turn at all - see the
+        # comment on MOTOR_MIN_DUTY_FRACTION in config.py
+        duty = config.effective_duty_fraction(max(0.0, min(1.0, speed / 100.0)))
         if direction > 0:
             self.motor_dir.off()  # LOW = forward = up
         else:

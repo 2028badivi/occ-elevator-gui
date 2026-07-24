@@ -164,6 +164,38 @@ class ElevatorStateTests(unittest.TestCase):
         self.assertTrue(state.has_arrived())
         self.assertEqual(state.direction_to_target(), 0)
 
+    def test_effective_duty_fraction_zero_stays_zero(self):
+        # a commanded speed of exactly 0 should never get boosted into motion
+        self.assertEqual(config.effective_duty_fraction(0), 0.0)
+
+    def test_effective_duty_fraction_full_speed_is_unboosted(self):
+        # 100% commanded should still be 100% duty, deadband or not
+        self.assertEqual(config.effective_duty_fraction(1.0), 1.0)
+
+    def test_effective_duty_fraction_boosts_low_commanded_speeds(self):
+        # any positive commanded speed should get pulled up to at least
+        # MOTOR_MIN_DUTY_FRACTION of real duty, since that's the whole point
+        # of the deadband compensation
+        boosted = config.effective_duty_fraction(0.1)
+        self.assertGreaterEqual(boosted, config.MOTOR_MIN_DUTY_FRACTION)
+        self.assertLess(boosted, 1.0)
+
+    def test_step_car_at_low_speed_moves_further_than_naive_linear_model(self):
+        # confirms step_car() is actually using the deadband-compensated
+        # duty, not the raw commanded percentage - a low commanded speed
+        # should move the car MORE than a plain (speed/100) x max_speed x dt
+        # calculation would, since the real motor needs more than that to
+        # actually turn
+        state = ElevatorState()
+        state.set_target(4)
+        state.car_y = 400  # mid-shaft, ramps are not in effect here
+        state._leg_start_y = 100
+        before = state.car_y
+        state.step_car(speed_percent=10, dt=1.0)
+        moved = abs(state.car_y - before)
+        naive_linear_move = 0.10 * MAX_CAR_SPEED_MM_PER_S
+        self.assertGreater(moved, naive_linear_move)
+
     def test_on_arrival_advances_sequence_queue(self):
         # arriving at the first stop in a sequence should automatically make
         # the next stop the new target, with a brief pause before continuing

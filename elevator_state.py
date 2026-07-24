@@ -185,7 +185,13 @@ class ElevatorState:
             return  # nothing to do if paused, already there, or stopped
         target_y = FLOOR_HEIGHTS_MM[self.target_floor]
         ramped_speed_percent = self.effective_speed_percent(speed_percent)
-        step = (ramped_speed_percent / 100.0) * MAX_CAR_SPEED_MM_PER_S * dt
+        # config.effective_duty_fraction() applies the same motor-deadband
+        # compensation used for the real motor's PWM duty (see
+        # hardware.move_toward()), so the simulated car's speed tracks what
+        # the real motor actually does at low commanded speeds instead of
+        # assuming a straight line the real motor doesn't follow
+        duty_fraction = config.effective_duty_fraction(ramped_speed_percent / 100.0)
+        step = duty_fraction * MAX_CAR_SPEED_MM_PER_S * dt
         if self.car_y < target_y:
             # target is higher up (bigger mm value = physically higher), so move up
             self.car_y += min(step, target_y - self.car_y)

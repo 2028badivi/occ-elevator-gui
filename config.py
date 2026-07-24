@@ -44,6 +44,39 @@ MOTOR_RPM_BEFORE_GEARBOX = 27  # the motor's raw speed cap (confirmed: this is P
 GEARBOX_RATIO = 1.0  # confirmed: 1:1 - the pulley spins at the raw motor rpm, no reduction
 MAX_PULLEY_RPM = MOTOR_RPM_BEFORE_GEARBOX / GEARBOX_RATIO
 
+# --- Motor deadband compensation ---
+# DC motors (especially driven through a gearbox) usually need a minimum
+# duty cycle just to overcome static friction and actually start turning -
+# below that "deadband," real speed does NOT scale linearly with commanded
+# duty the way a naive (speed_percent / 100 = duty) model assumes. this
+# matches what was seen on the real rig: matching the simulated car to the
+# real one got LESS accurate at lower speed slider settings (76% was most
+# accurate; lower settings drifted), which is exactly what an unmodeled
+# deadband looks like.
+#
+# this value is a starting guess, not measured off the real motor - if trips
+# still don't match reality at low speed settings, nudge it up (more of the
+# low end gets pulled toward MOTOR_MIN_DUTY_FRACTION) or down (closer to the
+# old straight-line assumption) and re-test.
+MOTOR_MIN_DUTY_FRACTION = 0.3
+
+
+def effective_duty_fraction(commanded_fraction: float) -> float:
+    # maps a commanded speed fraction (0.0-1.0, from the speed slider and the
+    # accel/decel ramp) onto the real duty cycle sent to the motor. any
+    # positive commanded speed gets boosted up to at least
+    # MOTOR_MIN_DUTY_FRACTION - enough real duty to actually overcome the
+    # deadband and turn the motor - then scales up linearly from there to
+    # full duty at a fully-commanded speed.
+    #
+    # used by BOTH hardware.py (the actual PWM duty sent to the MD20A) and
+    # elevator_state.py (the simulated car's speed), so the simulation and
+    # the real motor stay in sync instead of the simulation assuming a
+    # straight line the real motor doesn't actually follow.
+    if commanded_fraction <= 0:
+        return 0.0
+    return MOTOR_MIN_DUTY_FRACTION + commanded_fraction * (1 - MOTOR_MIN_DUTY_FRACTION)
+
 # --- Safety ---
 # this is a safety net in case something breaks, like a sensor dying or a wire
 # coming loose. currently unused (there's no position sensor on the rig to
