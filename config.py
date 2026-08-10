@@ -44,6 +44,18 @@ MOTOR_RPM_BEFORE_GEARBOX = 27  # the motor's raw speed cap (confirmed: this is P
 GEARBOX_RATIO = 1.0  # confirmed: 1:1 - the pulley spins at the raw motor rpm, no reduction
 MAX_PULLEY_RPM = MOTOR_RPM_BEFORE_GEARBOX / GEARBOX_RATIO
 
+# --- Open-loop calibration ---
+# with no position sensor, the sim's car position is the only estimate of
+# where the real car is, and it assumes motor speed is perfectly proportional
+# to PWM duty. real motors aren't: load + friction slow the car going UP, and
+# gravity assists it going DOWN, so the sim over-estimates position on up
+# trips and under-estimates on down trips. these two scales let each
+# direction's simulated speed be trimmed to match the real car - time a real
+# full-shaft trip in each direction and set scale = (sim trip time) / (real
+# trip time). 1.0 means "trust the raw physics" (no correction).
+UP_SPEED_SCALE = 1.0
+DOWN_SPEED_SCALE = 1.0
+
 # --- Safety ---
 # this is a safety net in case something breaks, like a sensor dying or a wire
 # coming loose. currently unused (there's no position sensor on the rig to

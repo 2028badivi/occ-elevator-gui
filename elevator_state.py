@@ -27,7 +27,7 @@ FLOOR_HEIGHTS_MM = {1: 0, 2: 324, 3: 648, 4: 972}
 # the car's real maximum linear speed, derived from the actual drive
 # hardware: the pulley moves (pi x diameter) mm of cable per revolution, and
 # the shaft tops out at MAX_PULLEY_RPM revolutions per minute. with the real
-# 74mm pulley and the 27 RPM cap that comes out to ~104.6 mm/s. this is the
+# 72mm pulley and the 27 RPM cap that comes out to ~101.8 mm/s. this is the
 # "maximum derivative of height" - step_car() can never move the car faster
 # than this no matter what the speed slider says, so a simulated trip takes
 # the same wall-clock time the real car would.
@@ -64,6 +64,7 @@ class ElevatorState:
         self.resume_at = None  # a timestamp for "don't move again until this time" (None = not paused)
         self.hardware_target_started_at = None  # used for stall detection, see note_hardware_target below
         self.stalled = False  # True if the motor appears stuck / not making progress
+        self.demo_mode = False  # True while the 1<->4 demo loop is running
         self._leg_start_y = self.car_y  # where the current move began, for the accel/decel ramp
 
     def is_paused(self) -> bool:
@@ -81,6 +82,7 @@ class ElevatorState:
         # called when a floor is manually picked (like pressing a floor
         # button). cancels whatever sequence might have been running, since a
         # manual button press should always take priority!!!
+        self.demo_mode = False
         self.sequence_mode = False
         self.sequence_queue = []
         self.target_floor = floor
@@ -94,12 +96,34 @@ class ElevatorState:
         # happened to be clicked in
         if not floors:
             return  # nothing was picked, so there's nothing to do
+        self.demo_mode = False
         ordered = sorted(floors)
         self.target_floor = ordered[0]  # go to the first (lowest) floor first
         self.sequence_queue = ordered[1:]  # save the rest for later
         self.sequence_mode = True
         self._leg_start_y = self.car_y
         self._clear_fault()
+
+    def start_demo(self) -> None:
+        # kicks off the demo loop: the car bounces between the bottom floor
+        # (1) and the top floor (FLOOR_COUNT) forever, pausing briefly at each
+        # end like a normal sequence stop. runs until stop_demo() is called or
+        # any other command (floor button, sequence, e-stop, calibrate) takes
+        # over. heads to whichever end is farther away first so there's always
+        # a visible move immediately.
+        self.sequence_mode = False
+        self.sequence_queue = []
+        self.demo_mode = True
+        bottom, top = 1, config.FLOOR_COUNT
+        mid_y = (FLOOR_HEIGHTS_MM[bottom] + FLOOR_HEIGHTS_MM[top]) / 2
+        self.target_floor = top if self.car_y <= mid_y else bottom
+        self._leg_start_y = self.car_y
+        self._clear_fault()
+
+    def stop_demo(self) -> None:
+        # ends the demo loop. the car finishes gliding to whatever floor it
+        # was already heading to (no abrupt stop - that's what e-stop is for)
+        self.demo_mode = False
 
     def calibrate_to_floor(self, floor: int) -> None:
         # tells the state "the car is actually sitting at this floor right
@@ -108,6 +132,7 @@ class ElevatorState:
         # config.START_FLOOR, even if the real car is sitting somewhere else
         # (e.g. floor 4). sets car_y, current_floor, AND target_floor all to
         # this floor, so nothing tries to move until a new button is pressed.
+        self.demo_mode = False
         self.sequence_mode = False
         self.sequence_queue = []
         self.car_y = FLOOR_HEIGHTS_MM[floor]
@@ -125,6 +150,7 @@ class ElevatorState:
         # of that floor already, the very next glide_step tick would see
         # "not arrived yet" and immediately re-command the motor, undoing
         # the stop (this is what was causing the jerking after pressing it)
+        self.demo_mode = False
         self.sequence_mode = False
         self.sequence_queue = []
         self.target_floor = floor
@@ -185,7 +211,14 @@ class ElevatorState:
             return  # nothing to do if paused, already there, or stopped
         target_y = FLOOR_HEIGHTS_MM[self.target_floor]
         ramped_speed_percent = self.effective_speed_percent(speed_percent)
-        step = (ramped_speed_percent / 100.0) * MAX_CAR_SPEED_MM_PER_S * dt
+        # per-direction calibration (config.UP_SPEED_SCALE / DOWN_SPEED_SCALE):
+        # the real motor runs slower than the ideal duty-proportional model
+        # going up (fighting gravity + load) and faster going down (gravity
+        # assists), so the raw physics over-estimates position on up trips and
+        # under-estimates on down trips. these scales trim the simulated speed
+        # per direction to match timed real trips.
+        direction_scale = config.UP_SPEED_SCALE if self.car_y < target_y else config.DOWN_SPEED_SCALE
+        step = (ramped_speed_percent / 100.0) * MAX_CAR_SPEED_MM_PER_S * direction_scale * dt
         if self.car_y < target_y:
             # target is higher up (bigger mm value = physically higher), so move up
             self.car_y += min(step, target_y - self.car_y)
@@ -213,7 +246,13 @@ class ElevatorState:
         if self.current_floor == self.target_floor:
             return False  # already known to be here, nothing new happened
         self.current_floor = self.target_floor
-        if self.sequence_mode:
+        if self.demo_mode:
+            # demo loop: bounce to the opposite end of the shaft after the
+            # usual brief stop, forever (until something cancels demo_mode)
+            self.target_floor = config.FLOOR_COUNT if self.current_floor == 1 else 1
+            self._leg_start_y = self.car_y
+            self.resume_at = time.monotonic() + SEQUENCE_STOP_PAUSE_SECONDS
+        elif self.sequence_mode:
             if self.sequence_queue:
                 # more stops left, so grab the next one and pause briefly first
                 self.target_floor = self.sequence_queue.pop(0)

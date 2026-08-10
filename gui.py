@@ -76,6 +76,33 @@ def calibrate_to_floor(floor: int) -> None:
     _refresh_floor_buttons()
 
 
+def toggle_demo() -> None:
+    # runs when the Demo button is clicked. starts (or stops) an endless
+    # showcase loop where the car bounces between floor 1 and the top floor,
+    # pausing briefly at each end. stopping is graceful - the car finishes
+    # the trip it's already on (emergency stop is still the hard cutoff).
+    if state.demo_mode:
+        state.stop_demo()
+        _set_status(f"Demo stopped - finishing trip to floor {state.target_floor}", "info")
+    else:
+        state.start_demo()
+        hardware.move_toward(state.direction_to_target(), state.effective_speed_percent(motor_speed))
+        _set_status(f"Demo: looping 1 <-> {config.FLOOR_COUNT}, heading to floor {state.target_floor}...", "moving")
+    _refresh_demo_button()
+    _refresh_floor_buttons()
+
+
+def _refresh_demo_button() -> None:
+    # the Demo button doubles as its own indicator: highlighted + relabeled
+    # while the loop is running so it's obvious how to turn it back off
+    if state.demo_mode:
+        demo_button.text = "Stop Demo"
+        _style_button(demo_button, "primary")
+    else:
+        demo_button.text = f"Demo: 1 <-> {config.FLOOR_COUNT} loop"
+        _style_button(demo_button, "neutral")
+
+
 def emergency_stop() -> None:
     # the big red "stop everything right now" button. figures out whichever
     # floor is closest to where the car currently is and treats that as the
@@ -84,6 +111,7 @@ def emergency_stop() -> None:
     state.cancel(nearest_floor)
     hardware.stop()
     _set_status("EMERGENCY STOP - motor halted", "danger")
+    _refresh_demo_button()
     _refresh_floor_buttons()
 
 
@@ -267,8 +295,13 @@ def glide_step() -> None:
     # runs at true wall-clock speed no matter what rate the GUI actually
     # manages to tick at. capped at 100ms so a one-off hitch (window drag,
     # system stall) can't teleport the car a huge distance in a single step
+    # BUT: that cap only makes sense in simulation-only mode. when the real
+    # motor is connected it kept spinning through the whole hitch, so clamping
+    # dt makes the simulated position fall behind the real car a little on
+    # every hitch (one of the sources of position over/under-estimation).
     now = time.monotonic()
-    dt = 1.0 / 60.0 if _last_tick_time is None else min(now - _last_tick_time, 0.1)
+    max_dt = 0.1 if not hardware.is_gpio else 1.0
+    dt = 1.0 / 60.0 if _last_tick_time is None else min(now - _last_tick_time, max_dt)
     _last_tick_time = now
 
     hardware.update_floor_leds(state.current_floor)
@@ -283,7 +316,10 @@ def glide_step() -> None:
         # a brand new floor was just reached this frame, so everything updates
         _refresh_indicator()
         _refresh_floor_buttons()
-        if state.sequence_mode:
+        if state.demo_mode:
+            # demo loop just bounced off an end floor and is heading back
+            _set_status(f"Demo: heading to floor {state.target_floor}...", "moving")
+        elif state.sequence_mode:
             # unchecks the box for the floor just visited, and shows the next stop
             if state.current_floor in floor_checkboxes:
                 floor_checkboxes[state.current_floor].value = 0
@@ -499,6 +535,8 @@ Text(main_panel, text="")  # spacer
 status_text = Text(main_panel, text=f"Stopped at floor {config.START_FLOOR}", color="white", size=11)
 Text(main_panel, text="")  # spacer
 _style_button(PushButton(main_panel, text="Home", width=20, command=home))
+Text(main_panel, text="")  # spacer
+demo_button = _style_button(PushButton(main_panel, text=f"Demo: 1 <-> {config.FLOOR_COUNT} loop", width=20, command=toggle_demo))
 Text(main_panel, text="")  # spacer
 _style_button(PushButton(main_panel, text="Emergency Stop", width=20, command=emergency_stop), kind="danger")
 
