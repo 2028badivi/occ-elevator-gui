@@ -1,115 +1,105 @@
-# Elevator Physics & Screen Math
+# Elevator motion model
 
-All the math behind the simulation, in one place. The goal of all of this:
-the GUI's car should match the real car in position AND timing, so the sim
-can stand in for the IR sensors during testing.
+The rig has no position sensor. The application therefore estimates position
+by integrating a calibrated model of the exact PWM command sent to the motor.
+This can be repeatable, but it cannot correct slip, changing load, voltage,
+temperature, or mechanical wear without an external reference.
 
-## Real measurements these are built on
+## Confirmed geometry and drive values
 
-| Quantity | Value | Source |
-|---|---|---|
-| Pulley diameter | 74 mm | measured |
-| Motor max speed (raw, BEFORE gearbox) | 27 RPM | whiteboard spec |
-| Gearbox ratio | **TODO - unknown, set to 1.0** | `config.GEARBOX_RATIO` |
-| Floor spacing (evenly spaced) | 254 mm | SolidWorks model |
-| Floor heights (F1..F4) | 0 / 254 / 508 / 762 mm | SolidWorks model |
-| Shaft margin below floor 1 | 18 mm | SolidWorks model |
-| Shaft margin above floor 4 | 43 mm | SolidWorks model |
-| Shaft interior width | 95 mm | SolidWorks model |
+| Quantity | Value |
+|---|---:|
+| Floor heights from shaft bottom | F1 0 / F2 324 / F3 648 / F4 972 mm |
+| Car height | 254 mm |
+| Pulley diameter | 72 mm |
+| Pulley speed at 100% | 27 RPM |
+| Gearbox ratio | 1:1 |
+| PWM + DIR pins | GPIO12 + GPIO26 |
+| PWM frequency | 100 Hz |
 
-## 1. Pulley circumference - cable moved per revolution
+Pulley circumference and nominal maximum cable speed are:
 
-```
-C = pi x d = pi x 74mm = 232.5 mm/rev
-```
-
-One full pulley turn moves the car 232.5 mm.
-
-## 2. Max car speed - the "maximum derivative of height"
-
-RPM is revolutions per MINUTE, so divide by 60 for rev/sec, then multiply by
-how far one revolution moves the car:
-
-```
-v_max = (MOTOR_RPM / GEARBOX_RATIO) / 60 x C
-      = (27 / 1.0) / 60 x 232.5
-      = 104.6 mm/s        <- placeholder until the real gear ratio is known
+```text
+C = pi * 72 = 226.195 mm/rev
+v_nominal = 27 / 60 * C = 101.788 mm/s
 ```
 
-This is the hard cap from the whiteboard graph: the height curve Y(t) can
-never have a slope steeper than v_max, no matter what the speed slider says.
-A unit test (test_step_car_never_exceeds_real_max_speed) locks this in.
+The speed slider and acceleration profile specify desired physical speed.
+They do not directly specify PWM duty.
 
-NOTE: the gear ratio matters a LOT here. e.g. a 20:1 reduction would make
-v_max ~5.2 mm/s. Fill in `GEARBOX_RATIO` in config.py once known.
+## Dead-zone + linear motor model
 
-## 3. Per-tick motion - time-based, not frame-based
+Each direction has independent calibration values because gravity and load
+make up/down behavior different:
 
-Every GUI tick measures the real elapsed time `dt` (~1/60 s) and moves the car:
-
-```
-delta_y = (speed% / 100) x ramp_fraction x v_max x dt
-```
-
-Because this multiplies by measured seconds instead of assuming a frame
-rate, a lagging GUI doesn't slow the simulated car down - a trip takes the
-same wall-clock time regardless of tick rate. dt is capped at 0.1 s so a
-one-off freeze can't teleport the car.
-
-Resulting trip times at 100% speed (with ramps, ratio 1.0):
-- floor to floor (254 mm): ~5.2 s
-- full run 1 -> 4 (762 mm): ~10 s
-
-## 4. Accel/decel ramp
-
-```
-ramp_fraction = max(0.15, min(d_traveled / 80mm, d_remaining / 80mm, 1.0))
+```text
+v_full(direction) = 101.788 * SPEED_SCALE(direction)
+v(duty) = 0                                           if duty <= deadzone
+v(duty) = v_full * (duty - deadzone)/(100-deadzone)  otherwise
 ```
 
-Speed scales up linearly over the first 80 mm of a move, cruises at 1.0,
-scales back down over the last 80 mm approaching the target, floored at 15%
-so the car never stalls short. Short hops where the ramps overlap form a
-triangular profile that never reaches full cruise. The 80 mm distances and
-15% floor are TUNING choices (feel), not derived from hardware - everything
-else in this doc comes from real measurements.
+The controller uses the inverse model when producing PWM:
 
-## 5. Pulley rotation animation
-
-```
-theta = (car_height / C) x 2pi
+```text
+duty = deadzone + desired_speed_fraction * (100 - deadzone)
 ```
 
-When the car has traveled one circumference (232.5 mm), the on-screen wheel
-has turned exactly once - so the drawn pulley spins in true sync with the
-real one, visibly slowing through the ramps.
+This is the key difference from a simple 20% clamp. A clamp commands 20% duty
+and incorrectly lets the estimator count it as 20% speed. The inverse model
+may command duty above the dead zone while integrating only the fitted physical
+speed. Hardware and estimator therefore use one consistent command.
 
-## 6. Screen mapping - one uniform mm -> pixel scale
+The defaults in `config.py` leave both dead zones at zero and both full-speed
+scales at one because those values must be measured on the actual rig.
 
-Total drawn shaft span:
+## Position integration
 
-```
-total = 18 + 762 + 43 = 823 mm
-scale = 332 design-px / 823 mm = 0.40 px/mm
-```
+For each GUI tick:
 
-Every element on the canvas - floor positions, the 95 mm shaft width, the
-80x100 mm car, the 74 mm pulley - is its real measurement times that same
-scale, on BOTH axes. That's what keeps proportions honest: a floor gap
-(254 mm -> 102 px) is genuinely ~2.7x the pulley diameter (74 mm -> 30 px)
-on screen, same as in real life.
-
-```
-design_y(h) = SHAFT_BOTTOM_DESIGN_Y - (h + 18mm) x scale
+```text
+delta_height = direction * estimated_speed(duty) * measured_elapsed_seconds
 ```
 
-(design-y increases downward like screen pixels; real height increases
-upward - the flip happens only here, at draw time.)
+Real elapsed time comes from `time.monotonic()`. In hardware mode it is not
+clamped: if the GUI stalls while the motor keeps turning, discarding elapsed
+time would make the estimate fall behind. Simulation-only mode caps long
+visual jumps at 0.1 seconds.
 
-## Where each piece lives
+The motor is stopped in the same tick that the estimate enters the 0.1 mm
+numerical arrival tolerance. The estimate is then anchored to the exact floor height.
+During the 0.65 second demo/sequence pause, both direction and duty are zero.
 
-| Math | File |
-|---|---|
-| C, v_max | `elevator_state.py` (top constants) |
-| per-tick motion, ramp | `elevator_state.py` (`step_car`, `effective_speed_percent`) |
-| pulley angle, screen mapping | `gui.py` (`draw_simulation`, `mm_to_design_y`, `mm_len`) |
-| raw inputs (diameter, RPM, ratio) | `config.py` |
+## Stopwatch calibration
+
+Choose one fixed PWM frequency and do not change it after calibration. Use a
+long measured section away from the physical end stops. For each direction:
+
+1. Start above the breakaway region, then time at least three distinct fixed
+   duties such as 30%, 50%, 75%, and 100%.
+2. Repeat each run and use the mean time.
+3. Run the fitter with `DUTY:SECONDS` samples:
+
+```bash
+python motion_calibration.py --distance-mm 648 \
+  --up 30:34.2 --up 50:19.8 --up 75:12.5 --up 100:9.8 \
+  --down 30:30.1 --down 50:17.4 --down 75:11.0 --down 100:8.9
+```
+
+Copy the four printed values into `config.py`:
+
+```text
+UP_PWM_DEADZONE_PERCENT
+UP_SPEED_SCALE
+DOWN_PWM_DEADZONE_PERCENT
+DOWN_SPEED_SCALE
+```
+
+Re-test one-floor, two-floor, and full-shaft moves after calibration. A
+distance-proportional error points to a speed scale; a low-duty-only error
+points to the dead-zone fit; a random error cannot be removed open-loop.
+
+## Limits
+
+Manual **Calibrate current position** remains the only safe reference reset
+without a sensor. Timed pushing against a hard stop is not implemented because
+the software cannot detect contact and could continue stalling the motor.

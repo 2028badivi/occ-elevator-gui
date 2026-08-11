@@ -47,10 +47,17 @@ def _refresh_floor_buttons() -> None:
         _style_button(button, "primary" if is_target else "neutral")
 
 
+def _apply_motion_command() -> tuple[int, float]:
+    """Sends the exact command that the position estimator will integrate."""
+    direction, duty_percent = state.motion_command(motor_speed)
+    hardware.move_toward(direction, duty_percent)
+    return direction, duty_percent
+
+
 def go_to_floor(floor: int) -> None:
     # runs whenever one of the "Floor 1/2/3/4" buttons is clicked
     state.set_target(floor)
-    hardware.move_toward(state.direction_to_target(), state.effective_speed_percent(motor_speed))
+    _apply_motion_command()
     _set_status(f"Moving to floor {floor}...", "moving")
     _refresh_floor_buttons()
 
@@ -58,7 +65,7 @@ def go_to_floor(floor: int) -> None:
 def home() -> None:
     # runs when the Home button is clicked, sends the elevator back to the start floor
     state.set_target(config.START_FLOOR)
-    hardware.move_toward(state.direction_to_target(), state.effective_speed_percent(motor_speed))
+    _apply_motion_command()
     _set_status(f"Going home: floor {config.START_FLOOR}", "moving")
     _refresh_floor_buttons()
 
@@ -86,7 +93,7 @@ def toggle_demo() -> None:
         _set_status(f"Demo stopped - finishing trip to floor {state.target_floor}", "info")
     else:
         state.start_demo()
-        hardware.move_toward(state.direction_to_target(), state.effective_speed_percent(motor_speed))
+        _apply_motion_command()
         _set_status(f"Demo: looping 1 <-> {config.FLOOR_COUNT}, heading to floor {state.target_floor}...", "moving")
     _refresh_demo_button()
     _refresh_floor_buttons()
@@ -127,7 +134,7 @@ def run_sequence() -> None:
 
     state.start_sequence(selected)
     prog_status.value = f"Running: {sorted(selected)}"
-    hardware.move_toward(state.direction_to_target(), state.effective_speed_percent(motor_speed))
+    _apply_motion_command()
     _set_status(f"Moving to floor {state.target_floor}...", "moving")
     _refresh_floor_buttons()
 
@@ -139,7 +146,7 @@ def on_speed_change(value) -> None:
     global motor_speed
     motor_speed = int(value)  # the slider passes its value as a string, so it gets converted to a number
     speed_label.value = f"Speed: {motor_speed}%  (~{motor_speed / 100.0 * MAX_CAR_SPEED_MM_PER_S:.0f} mm/s)"
-    hardware.move_toward(state.direction_to_target(), state.effective_speed_percent(motor_speed))
+    _apply_motion_command()
 
 
 def _refresh_indicator() -> None:
@@ -186,10 +193,8 @@ def draw_simulation() -> None:
     # every size below comes from a REAL measurement pushed through the same
     # uniform mm->pixel scale, so proportions on screen match the actual rig
     cx = 70  # horizontal center of the shaft on the design canvas
-    # state.car_y (and FLOOR_HEIGHTS_MM) mark CAR_FLOOR_REFERENCE_FRACTION of
-    # the way down the car body, not one of its edges - so the car is drawn
-    # straddling that point at that specific fraction, not centered on it or
-    # sitting fully above/below it.
+    # state.car_y (and FLOOR_HEIGHTS_MM) mark the car's bottom edge. The
+    # reference fraction keeps that convention explicit in the draw math.
     car_ref_y = mm_to_design_y(state.car_y)
     car_half_w = mm_len(CAR_WIDTH_MM) / 2
     car_top_y = car_ref_y - mm_len(CAR_HEIGHT_MM * CAR_FLOOR_REFERENCE_FRACTION)
@@ -206,7 +211,7 @@ def draw_simulation() -> None:
     )
     drawing.line(sc(cx), sc(SHAFT_TOP_DESIGN_Y), sc(cx), sc(SHAFT_BOTTOM_DESIGN_Y), color="#333333")
 
-    # the pulley wheel above the shaft, drawn at its TRUE size (74mm diameter
+    # the pulley wheel above the shaft, drawn at its TRUE size (72mm diameter
     # on the same scale as everything else). its rotation angle comes straight
     # from the physics: the car has traveled car_y mm of cable, and the pulley
     # turns once per circumference - so the wheel on screen spins exactly in
@@ -300,17 +305,24 @@ def glide_step() -> None:
     # dt makes the simulated position fall behind the real car a little on
     # every hitch (one of the sources of position over/under-estimation).
     now = time.monotonic()
-    max_dt = 0.1 if not hardware.is_gpio else 1.0
-    dt = 1.0 / 60.0 if _last_tick_time is None else min(now - _last_tick_time, max_dt)
+    elapsed = 1.0 / 60.0 if _last_tick_time is None else now - _last_tick_time
+    # In simulation, cap a long UI pause so the drawing does not teleport.
+    # With real hardware, never discard elapsed time: the motor kept turning
+    # throughout the hitch, so the estimator must integrate the same interval.
+    dt = min(elapsed, 0.1) if not hardware.is_gpio else elapsed
     _last_tick_time = now
 
     hardware.update_floor_leds(state.current_floor)
-    if hardware.is_gpio:
-        hardware.move_toward(state.direction_to_target(), state.effective_speed_percent(motor_speed))
+    direction, duty_percent = _apply_motion_command()
 
     previous_car_y = state.car_y
-    state.step_car(motor_speed, dt)
+    state.advance_from_command(direction, duty_percent, dt)
     _velocity_mm_s = (state.car_y - previous_car_y) / dt if dt > 0 else 0.0
+
+    if state.has_arrived():
+        # Stop in the same tick that the estimator reaches the floor. This is
+        # essential before on_arrival() retargets a demo/sequence next leg.
+        hardware.stop()
 
     if state.has_arrived() and state.on_arrival():
         # a brand new floor was just reached this frame, so everything updates
@@ -424,23 +436,28 @@ def text_size(value):
 # scale, used for BOTH axes - vertical positions, shaft width, car size, and
 # pulley size all come from real measured dimensions through the same
 # conversion, so everything on screen is genuinely proportional to the
-# physical rig instead of eyeballed. margins are from the CAD sketch: 18mm
-# of shaft below floor 1 and 43mm above floor 4, in a 95mm-wide interior.
-SHAFT_BOTTOM_MARGIN_MM = 18   # shaft continues this far below floor 1
-SHAFT_TOP_MARGIN_MM = 43      # shaft continues this far above the top floor
+# physical rig instead of eyeballed. Floor heights use the measured shaft
+# bottom as 0mm. Floor 4 marks the car's bottom, so the visible shaft must
+# include the 254mm car plus 43mm of clearance above it.
+SHAFT_BOTTOM_MARGIN_MM = 0    # floor 1 is the measured shaft-bottom datum
+SHAFT_TOP_CLEARANCE_MM = 43   # clearance above the car when parked at floor 4
 SHAFT_INTERIOR_WIDTH_MM = 95  # real interior width of the shaft
 CAR_WIDTH_MM = 80             # display size of the car (approximate)
-CAR_HEIGHT_MM = 100           # display size of the car (approximate)
+CAR_HEIGHT_MM = config.CAR_HEIGHT_MM
 
-# state.car_y (and FLOOR_HEIGHTS_MM) mark a reference point ON the car body,
-# not one of its edges - confirmed by eye against the real rig as sitting a
-# little above the car's actual vertical middle. 0.0 would put the reference
-# at the very top of the car, 1.0 at the very bottom, 0.5 dead center.
-CAR_FLOOR_REFERENCE_FRACTION = 0.4
+# state.car_y (and FLOOR_HEIGHTS_MM) mark the car's bottom edge, which aligns
+# with a floor landing. 0.0 would put the reference at the top of the car,
+# 1.0 at the bottom, and 0.5 at the center.
+CAR_FLOOR_REFERENCE_FRACTION = 1.0
 
 SHAFT_TOP_DESIGN_Y = 40       # where the shaft interior starts on the design canvas
 SHAFT_BOTTOM_DESIGN_Y = 372   # where it ends (leaves room for the pulley above)
-_TOTAL_SHAFT_MM = SHAFT_BOTTOM_MARGIN_MM + FLOOR_HEIGHTS_MM[config.FLOOR_COUNT] + SHAFT_TOP_MARGIN_MM
+_TOTAL_SHAFT_MM = (
+    SHAFT_BOTTOM_MARGIN_MM
+    + FLOOR_HEIGHTS_MM[config.FLOOR_COUNT]
+    + CAR_HEIGHT_MM
+    + SHAFT_TOP_CLEARANCE_MM
+)
 MM_TO_DESIGN = (SHAFT_BOTTOM_DESIGN_Y - SHAFT_TOP_DESIGN_Y) / _TOTAL_SHAFT_MM
 
 

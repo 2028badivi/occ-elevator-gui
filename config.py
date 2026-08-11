@@ -17,6 +17,7 @@
 # PWM pin: duty cycle 0.0-1.0 sets speed, same regardless of direction
 MOTOR_DIR_PIN = 26   # direction
 MOTOR_PWM_PIN = 12   # speed (PWM)
+MOTOR_PWM_FREQUENCY_HZ = 100  # explicit gpiozero default; keep fixed while calibrating
 
 # floor LEDs - one GPIO pin per floor, floor number -> pin number
 FLOOR_LED_PINS = {1: 5, 2: 6, 3: 13, 4: 19}
@@ -32,6 +33,8 @@ FLOOR_LED_PINS = {1: 5, 2: 6, 3: 13, 4: 19}
 START_FLOOR = 1       # the floor the elevator starts on when the app is launched
 FLOOR_COUNT = 4        # how many floors this elevator has (4 for hospital and residential building)
 DEFAULT_SPEED = 50     # default motor speed out of 100 (like a percentage) when the app opens
+FLOOR_HEIGHTS_MM = {1: 0, 2: 324, 3: 648, 4: 972}  # measured from shaft bottom
+CAR_HEIGHT_MM = 254
 
 # --- Real drive physics ---
 # these numbers tie the simulation to the real machine: the motor turns a
@@ -46,15 +49,25 @@ MAX_PULLEY_RPM = MOTOR_RPM_BEFORE_GEARBOX / GEARBOX_RATIO
 
 # --- Open-loop calibration ---
 # with no position sensor, the sim's car position is the only estimate of
-# where the real car is, and it assumes motor speed is perfectly proportional
-# to PWM duty. real motors aren't: load + friction slow the car going UP, and
-# gravity assists it going DOWN, so the sim over-estimates position on up
-# trips and under-estimates on down trips. these two scales let each
-# direction's simulated speed be trimmed to match the real car - time a real
-# full-shaft trip in each direction and set scale = (sim trip time) / (real
-# trip time). 1.0 means "trust the raw physics" (no correction).
+# where the real car is. Load + friction slow the car going UP, while gravity
+# changes its speed going DOWN. These two scales trim the calculated 101.8mm/s
+# full-duty speed independently in each direction. Fit them from fixed-duty
+# stopwatch runs with motion_calibration.py; 1.0 trusts the raw pulley math.
 UP_SPEED_SCALE = 1.0
 DOWN_SPEED_SCALE = 1.0
+
+# PWM duty is not the same thing as motor speed. A loaded DC motor generally
+# has a dead zone: duty below a direction-dependent threshold produces no
+# useful motion. The motion model treats speed above that threshold as linear:
+#
+#   speed = full_speed * (duty - deadzone) / (100 - deadzone)
+#
+# The inverse mapping is used for motor commands, so asking for 10% of the
+# measured full speed produces a duty just above the dead zone rather than a
+# raw 10% command that may only hum. Leave these at 0 until measured; use
+# motion_calibration.py with stopwatch data to fit them instead of guessing.
+UP_PWM_DEADZONE_PERCENT = 0.0
+DOWN_PWM_DEADZONE_PERCENT = 0.0
 
 # --- Safety ---
 # this is a safety net in case something breaks, like a sensor dying or a wire

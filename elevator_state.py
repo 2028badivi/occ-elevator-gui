@@ -22,7 +22,7 @@ import config
 # real rig's actual dimensions instead of made-up numbers picked to look OK
 # on screen. gui.py is responsible for mapping these real-world mm values
 # onto actual screen pixels for drawing - this file only ever deals in mm.
-FLOOR_HEIGHTS_MM = {1: 0, 2: 324, 3: 648, 4: 972}
+FLOOR_HEIGHTS_MM = dict(config.FLOOR_HEIGHTS_MM)
 
 # the car's real maximum linear speed, derived from the actual drive
 # hardware: the pulley moves (pi x diameter) mm of cable per revolution, and
@@ -34,7 +34,10 @@ FLOOR_HEIGHTS_MM = {1: 0, 2: 324, 3: 648, 4: 972}
 PULLEY_CIRCUMFERENCE_MM = math.pi * config.PULLEY_DIAMETER_MM
 MAX_CAR_SPEED_MM_PER_S = (config.MAX_PULLEY_RPM / 60.0) * PULLEY_CIRCUMFERENCE_MM
 
-ARRIVAL_TOLERANCE_MM = 3.0  # close enough to the target counts as "arrived"
+# This is only a floating-point termination threshold. A larger tolerance
+# deliberately cuts motor power that far before the requested floor, so keep
+# it small and let advance_from_command() clamp the final step to the target.
+ARRIVAL_TOLERANCE_MM = 0.1
 SEQUENCE_STOP_PAUSE_SECONDS = 0.65  # how long to wait at each stop before moving to the next one in a sequence
 
 # instead of running at one constant speed and stopping abruptly, the car
@@ -85,6 +88,7 @@ class ElevatorState:
         self.demo_mode = False
         self.sequence_mode = False
         self.sequence_queue = []
+        self.resume_at = None
         self.target_floor = floor
         self._leg_start_y = self.car_y  # a fresh move starts here, for the accel ramp
         self._clear_fault()
@@ -97,7 +101,14 @@ class ElevatorState:
         if not floors:
             return  # nothing was picked, so there's nothing to do
         self.demo_mode = False
-        ordered = sorted(floors)
+        ordered = sorted(set(floors))
+        if self.has_arrived():
+            ordered = [floor for floor in ordered if floor != self.current_floor]
+        if not ordered:
+            self.sequence_mode = False
+            self.sequence_queue = []
+            return
+        self.resume_at = None
         self.target_floor = ordered[0]  # go to the first (lowest) floor first
         self.sequence_queue = ordered[1:]  # save the rest for later
         self.sequence_mode = True
@@ -114,6 +125,7 @@ class ElevatorState:
         self.sequence_mode = False
         self.sequence_queue = []
         self.demo_mode = True
+        self.resume_at = None
         bottom, top = 1, config.FLOOR_COUNT
         mid_y = (FLOOR_HEIGHTS_MM[bottom] + FLOOR_HEIGHTS_MM[top]) / 2
         self.target_floor = top if self.car_y <= mid_y else bottom
@@ -135,6 +147,7 @@ class ElevatorState:
         self.demo_mode = False
         self.sequence_mode = False
         self.sequence_queue = []
+        self.resume_at = None
         self.car_y = FLOOR_HEIGHTS_MM[floor]
         self.current_floor = floor
         self.target_floor = floor
@@ -153,8 +166,10 @@ class ElevatorState:
         self.demo_mode = False
         self.sequence_mode = False
         self.sequence_queue = []
+        self.resume_at = None
         self.target_floor = floor
         self.car_y = FLOOR_HEIGHTS_MM[floor]
+        self.current_floor = floor
         self._leg_start_y = self.car_y
         self._clear_fault()
 
@@ -169,7 +184,11 @@ class ElevatorState:
         # -1 (down), or 0 if already there. this is the ONLY thing hardware.py
         # is told about position - there's no sensor on the rig to check this
         # against, so the simulated car_y here is the sole source of truth.
-        if self.has_arrived():
+        # on_arrival() immediately selects the next demo/sequence target, but
+        # the physical motor must remain off for the configured stop pause.
+        # The old code returned the new direction here while step_car() stayed
+        # frozen, injecting real movement that the estimator never counted.
+        if self.is_paused() or self.has_arrived():
             return 0
         target_y = FLOOR_HEIGHTS_MM[self.target_floor]
         return 1 if target_y > self.car_y else -1
@@ -177,10 +196,10 @@ class ElevatorState:
     def has_arrived(self) -> bool:
         # checks if the car is close enough to the target floor's position to
         # count as "arrived" (millimeter-perfect accuracy isn't needed, being
-        # within a few mm is plenty good)
+        # within the small numerical integration tolerance)
         return abs(self.car_y - FLOOR_HEIGHTS_MM[self.target_floor]) <= ARRIVAL_TOLERANCE_MM
 
-    def effective_speed_percent(self, speed_percent: int) -> int:
+    def effective_speed_percent(self, speed_percent: int) -> float:
         # applies the accel/decel ramp on top of whatever speed was
         # commanded (e.g. from the speed slider), based on how far the car
         # has traveled since the current move started and how far it still
@@ -196,7 +215,61 @@ class ElevatorState:
         accel_fraction = min(1.0, distance_traveled / ACCEL_DISTANCE_MM)
         decel_fraction = min(1.0, distance_remaining / DECEL_DISTANCE_MM)
         ramp_fraction = max(MIN_SPEED_FRACTION, min(accel_fraction, decel_fraction))
-        return round(speed_percent * ramp_fraction)
+        return speed_percent * ramp_fraction
+
+    @staticmethod
+    def _direction_calibration(direction: int) -> tuple[float, float]:
+        """Returns (dead-zone duty %, measured/nominal full-speed scale)."""
+        if direction > 0:
+            return config.UP_PWM_DEADZONE_PERCENT, config.UP_SPEED_SCALE
+        if direction < 0:
+            return config.DOWN_PWM_DEADZONE_PERCENT, config.DOWN_SPEED_SCALE
+        return 0.0, 0.0
+
+    @classmethod
+    def pwm_duty_for_speed(cls, direction: int, desired_speed_percent: float) -> float:
+        """Maps desired physical speed to duty using a dead-zone + linear model."""
+        if direction == 0 or desired_speed_percent <= 0:
+            return 0.0
+        deadzone, _ = cls._direction_calibration(direction)
+        deadzone = max(0.0, min(99.0, float(deadzone)))
+        speed_fraction = max(0.0, min(1.0, desired_speed_percent / 100.0))
+        return deadzone + speed_fraction * (100.0 - deadzone)
+
+    @classmethod
+    def estimated_speed_mm_s(cls, direction: int, duty_percent: float) -> float:
+        """Estimates actual car speed from the exact PWM duty being commanded."""
+        if direction == 0 or duty_percent <= 0:
+            return 0.0
+        deadzone, full_speed_scale = cls._direction_calibration(direction)
+        deadzone = max(0.0, min(99.0, float(deadzone)))
+        duty_percent = max(0.0, min(100.0, float(duty_percent)))
+        if duty_percent <= deadzone:
+            return 0.0
+        moving_fraction = (duty_percent - deadzone) / (100.0 - deadzone)
+        return moving_fraction * MAX_CAR_SPEED_MM_PER_S * max(0.0, full_speed_scale)
+
+    def motion_command(self, speed_percent: int) -> tuple[int, float]:
+        """Returns the one direction/duty command shared by hardware and estimator."""
+        direction = self.direction_to_target()
+        if direction == 0 or speed_percent <= 0:
+            return 0, 0.0
+        desired_speed = self.effective_speed_percent(speed_percent)
+        return direction, self.pwm_duty_for_speed(direction, desired_speed)
+
+    def advance_from_command(self, direction: int, duty_percent: float, dt: float) -> None:
+        """Integrates position from the exact command sent to the real motor."""
+        if direction == 0 or duty_percent <= 0 or dt <= 0 or self.is_paused() or self.has_arrived():
+            return
+        target_y = FLOOR_HEIGHTS_MM[self.target_floor]
+        expected_direction = 1 if target_y > self.car_y else -1
+        if direction != expected_direction:
+            return
+        step = self.estimated_speed_mm_s(direction, duty_percent) * dt
+        if direction > 0:
+            self.car_y += min(step, target_y - self.car_y)
+        else:
+            self.car_y -= min(step, self.car_y - target_y)
 
     def step_car(self, speed_percent: int, dt: float = 1.0 / 60.0) -> None:
         # advances the car by however far it could really travel in dt
@@ -207,24 +280,8 @@ class ElevatorState:
         # ticking at a smooth 60fps or chugging, and the physical speed cap
         # (MAX_CAR_SPEED_MM_PER_S) is genuinely a mm-per-SECOND limit rather
         # than a per-frame amount that would drift with frame rate.
-        if self.is_paused() or self.has_arrived() or speed_percent <= 0 or dt <= 0:
-            return  # nothing to do if paused, already there, or stopped
-        target_y = FLOOR_HEIGHTS_MM[self.target_floor]
-        ramped_speed_percent = self.effective_speed_percent(speed_percent)
-        # per-direction calibration (config.UP_SPEED_SCALE / DOWN_SPEED_SCALE):
-        # the real motor runs slower than the ideal duty-proportional model
-        # going up (fighting gravity + load) and faster going down (gravity
-        # assists), so the raw physics over-estimates position on up trips and
-        # under-estimates on down trips. these scales trim the simulated speed
-        # per direction to match timed real trips.
-        direction_scale = config.UP_SPEED_SCALE if self.car_y < target_y else config.DOWN_SPEED_SCALE
-        step = (ramped_speed_percent / 100.0) * MAX_CAR_SPEED_MM_PER_S * direction_scale * dt
-        if self.car_y < target_y:
-            # target is higher up (bigger mm value = physically higher), so move up
-            self.car_y += min(step, target_y - self.car_y)
-        else:
-            # target is lower, so move down
-            self.car_y -= min(step, self.car_y - target_y)
+        direction, duty_percent = self.motion_command(speed_percent)
+        self.advance_from_command(direction, duty_percent, dt)
 
     def trip_progress(self):
         # how far through the current move the car is, as a 0.0-1.0 fraction
@@ -245,6 +302,10 @@ class ElevatorState:
         # so the caller knows something changed and the display should update.
         if self.current_floor == self.target_floor:
             return False  # already known to be here, nothing new happened
+        # Remove the numerical arrival tolerance before starting another leg.
+        # This keeps the estimator anchored to the known floor coordinates
+        # instead of carrying a rounding residue through every trip.
+        self.car_y = FLOOR_HEIGHTS_MM[self.target_floor]
         self.current_floor = self.target_floor
         if self.demo_mode:
             # demo loop: bounce to the opposite end of the shaft after the

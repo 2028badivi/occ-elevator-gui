@@ -9,8 +9,10 @@
 # "OK" at the bottom means everything passed; otherwise it reports exactly
 # which test failed and why
 
+import math
 import time
 import unittest
+from unittest.mock import patch
 
 import config
 from elevator_state import (
@@ -28,6 +30,11 @@ class ElevatorStateTests(unittest.TestCase):
     # every method here that starts with "test_" gets run automatically by
     # unittest - that's just how the library knows what counts as a test
 
+    def test_confirmed_geometry_and_drive_math(self):
+        self.assertEqual(FLOOR_HEIGHTS_MM, {1: 0, 2: 324, 3: 648, 4: 972})
+        expected_max_speed = 27.0 / 60.0 * math.pi * 72.0
+        self.assertAlmostEqual(MAX_CAR_SPEED_MM_PER_S, expected_max_speed)
+
     def test_set_target_cancels_running_sequence(self):
         # if a sequence is running and a normal floor button gets pressed,
         # the sequence should just get cancelled completely
@@ -39,13 +46,20 @@ class ElevatorStateTests(unittest.TestCase):
         self.assertEqual(state.sequence_queue, [])
 
     def test_start_sequence_sorts_and_queues_remainder(self):
-        # checking floors 4, 1, 3 (in that odd order) should still visit them
-        # in the sensible order: 1, then 3, then 4
+        # checking floors 4, 1, 3 while already at floor 1 should skip the
+        # current floor and visit the remaining stops in ascending order
         state = ElevatorState()
         state.start_sequence([4, 1, 3])
-        self.assertEqual(state.target_floor, 1)
-        self.assertEqual(state.sequence_queue, [3, 4])
+        self.assertEqual(state.target_floor, 3)
+        self.assertEqual(state.sequence_queue, [4])
         self.assertTrue(state.sequence_mode)
+
+    def test_start_sequence_with_only_current_floor_finishes_immediately(self):
+        state = ElevatorState()
+        state.start_sequence([1])
+        self.assertFalse(state.sequence_mode)
+        self.assertEqual(state.sequence_queue, [])
+        self.assertTrue(state.has_arrived())
 
     def test_start_sequence_ignores_empty_list(self):
         # if nothing was checked, starting a sequence shouldn't do anything weird
@@ -58,13 +72,10 @@ class ElevatorStateTests(unittest.TestCase):
     def test_step_car_moves_toward_target_and_stops_within_tolerance(self):
         # basic sanity check: calling step_car over and over should
         # eventually get the car to the target floor and stop it there.
-        # each step simulates 0.1s of real time (dt=0.1). with the real 9:1
-        # gearbox, MAX_CAR_SPEED_MM_PER_S is only ~11mm/s, so a full 762mm
-        # trip takes over a minute - the loop cap of 10000 steps (1000
-        # simulated seconds) leaves plenty of headroom without letting a bug
-        # hang the test forever
+        # each step simulates 0.1s of real time (dt=0.1); the generous loop
+        # cap prevents a bug from hanging the test forever
         state = ElevatorState()
-        state.target_floor = 4  # FLOOR_HEIGHTS_MM[4] = 762mm, above FLOOR_HEIGHTS_MM[1] = 0mm (bigger mm = higher up)
+        state.target_floor = 4
         for _ in range(10000):
             state.step_car(speed_percent=50, dt=0.1)
             if state.has_arrived():
@@ -111,10 +122,10 @@ class ElevatorStateTests(unittest.TestCase):
         # from the target, the car should be at full commanded speed (the
         # "cruise" portion of the trip)
         state = ElevatorState()
-        state.set_target(4)  # FLOOR_HEIGHTS_MM[4] = 762mm
+        state.set_target(4)
         target_y = FLOOR_HEIGHTS_MM[4]
-        # sit comfortably in the middle: far enough from both the start (0mm)
-        # and the target (762mm) that neither ramp is in effect
+        # sit comfortably in the middle: far enough from both the start and
+        # the 972mm target that neither ramp is in effect
         state.car_y = 400
         self.assertGreater(abs(state.car_y - state._leg_start_y), ACCEL_DISTANCE_MM)
         self.assertGreater(abs(target_y - state.car_y), DECEL_DISTANCE_MM)
@@ -137,6 +148,49 @@ class ElevatorStateTests(unittest.TestCase):
         state = ElevatorState()
         state.set_target(4)
         self.assertEqual(state.effective_speed_percent(0), 0)
+
+    def test_deadzone_mapping_raises_duty_without_falsely_raising_estimated_speed(self):
+        with (
+            patch.object(config, "UP_PWM_DEADZONE_PERCENT", 20.0),
+            patch.object(config, "UP_SPEED_SCALE", 0.8),
+        ):
+            duty = ElevatorState.pwm_duty_for_speed(direction=1, desired_speed_percent=50.0)
+            self.assertAlmostEqual(duty, 60.0)
+            estimated = ElevatorState.estimated_speed_mm_s(direction=1, duty_percent=duty)
+            self.assertAlmostEqual(estimated, MAX_CAR_SPEED_MM_PER_S * 0.8 * 0.5)
+
+    def test_duty_at_or_below_deadzone_estimates_zero_motion(self):
+        with patch.object(config, "DOWN_PWM_DEADZONE_PERCENT", 12.0):
+            self.assertEqual(ElevatorState.estimated_speed_mm_s(-1, 12.0), 0.0)
+            self.assertEqual(ElevatorState.estimated_speed_mm_s(-1, 5.0), 0.0)
+
+    def test_motion_command_is_zero_during_sequence_pause(self):
+        state = ElevatorState()
+        state.target_floor = 2
+        state.car_y = FLOOR_HEIGHTS_MM[2]
+        state.on_arrival()
+        state.target_floor = 3
+        state.resume_at = time.monotonic() + 10.0
+        self.assertEqual(state.motion_command(50), (0, 0.0))
+
+    def test_all_floor_pairs_reach_and_anchor_to_exact_height(self):
+        for start_floor in FLOOR_HEIGHTS_MM:
+            for end_floor in FLOOR_HEIGHTS_MM:
+                if start_floor == end_floor:
+                    continue
+                with self.subTest(start=start_floor, end=end_floor):
+                    state = ElevatorState()
+                    state.calibrate_to_floor(start_floor)
+                    state.set_target(end_floor)
+                    for _ in range(20000):
+                        direction, duty = state.motion_command(50)
+                        state.advance_from_command(direction, duty, dt=0.02)
+                        if state.has_arrived():
+                            break
+                    self.assertTrue(state.has_arrived())
+                    self.assertTrue(state.on_arrival())
+                    self.assertEqual(state.current_floor, end_floor)
+                    self.assertEqual(state.car_y, FLOOR_HEIGHTS_MM[end_floor])
 
     def test_step_car_still_reaches_target_despite_ramping(self):
         # the ramp shouldn't prevent the car from ever actually arriving -
@@ -219,6 +273,7 @@ class ElevatorStateTests(unittest.TestCase):
         state.cancel(1)
         self.assertEqual(state.target_floor, 1)
         self.assertEqual(state.car_y, FLOOR_HEIGHTS_MM[1])
+        self.assertEqual(state.current_floor, 1)
         self.assertTrue(state.has_arrived())
         self.assertEqual(state.direction_to_target(), 0)
         self.assertFalse(state.sequence_mode)
@@ -256,6 +311,23 @@ class ElevatorStateTests(unittest.TestCase):
         state.set_target(2)
         self.assertFalse(state.stalled)
         self.assertIsNone(state.hardware_target_started_at)
+
+    def test_demo_pause_does_not_accumulate_simulated_motion(self):
+        state = ElevatorState()
+        state.start_demo()
+        state.car_y = FLOOR_HEIGHTS_MM[4]
+        self.assertTrue(state.on_arrival())
+        self.assertTrue(state.is_paused())
+        paused_height = state.car_y
+        for _ in range(100):
+            direction, duty = state.motion_command(50)
+            state.advance_from_command(direction, duty, dt=0.016)
+        self.assertEqual((direction, duty), (0, 0.0))
+        self.assertEqual(state.car_y, paused_height)
+        state.resume_at = time.monotonic() - 1.0
+        direction, duty = state.motion_command(50)
+        self.assertEqual(direction, -1)
+        self.assertGreater(duty, 0.0)
 
 
 if __name__ == "__main__":

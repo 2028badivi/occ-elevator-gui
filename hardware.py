@@ -57,7 +57,10 @@ class HardwareController:
         # forward/up, HIGH = backward/down), one PWM pin for speed
         try:
             self.motor_dir = DigitalOutputDevice(config.MOTOR_DIR_PIN)
-            self.motor_pwm = PWMOutputDevice(config.MOTOR_PWM_PIN)
+            self.motor_pwm = PWMOutputDevice(
+                config.MOTOR_PWM_PIN,
+                frequency=config.MOTOR_PWM_FREQUENCY_HZ,
+            )
         except Exception as exc:
             print(f"[hardware] motor init failed (check MOTOR_DIR_PIN/MOTOR_PWM_PIN wiring): {exc}")
 
@@ -77,7 +80,7 @@ class HardwareController:
         for floor, led in self.floor_leds.items():
             led.value = floor == active_floor
 
-    def move_toward(self, direction: int, speed: int) -> None:
+    def move_toward(self, direction: int, speed: float) -> None:
         # tells the motor which way to spin and how fast. direction comes
         # from ElevatorState.direction_to_target(): +1 = up, -1 = down, 0 =
         # already there. speed comes in as 0-100 (like a percent) since
