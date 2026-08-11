@@ -169,7 +169,14 @@ class ElevatorState:
         # -1 (down), or 0 if already there. this is the ONLY thing hardware.py
         # is told about position - there's no sensor on the rig to check this
         # against, so the simulated car_y here is the sole source of truth.
-        if self.has_arrived():
+        #
+        # 0 during a pause too: on_arrival() retargets the next stop (demo
+        # bounce / sequence) the same instant the car reaches a floor, so
+        # without this check the real motor would be commanded toward the new
+        # target for the whole 0.65s pause while the simulated car sits still -
+        # the motor never actually stopped at the end floors, and every pause
+        # injected ~10mm of real-vs-sim position error that compounded each loop.
+        if self.is_paused() or self.has_arrived():
             return 0
         target_y = FLOOR_HEIGHTS_MM[self.target_floor]
         return 1 if target_y > self.car_y else -1
