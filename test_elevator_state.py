@@ -100,11 +100,24 @@ class ElevatorStateTests(unittest.TestCase):
     def test_effective_speed_is_ramped_down_right_at_leg_start(self):
         # right at the start of a fresh move (distance_traveled == 0), the
         # ramp should hold speed down at the minimum floor, not let it jump
-        # straight to full commanded speed
+        # straight to full commanded speed. the floor is the higher of the
+        # ramp minimum and the motor's absolute duty floor (MIN_DUTY_PERCENT)
         state = ElevatorState()
         state.set_target(4)
-        expected = round(100 * MIN_SPEED_FRACTION)
+        expected = max(round(100 * MIN_SPEED_FRACTION), config.MIN_DUTY_PERCENT)
         self.assertEqual(state.effective_speed_percent(100), expected)
+
+    def test_effective_speed_never_commands_below_the_duty_floor(self):
+        # any nonzero command must be at least MIN_DUTY_PERCENT - below that
+        # the real motor stalls while the sim would keep gliding, so the two
+        # would diverge right at the end of every trip
+        state = ElevatorState()
+        state.set_target(4)
+        target_y = FLOOR_HEIGHTS_MM[4]
+        state.car_y = target_y - 5  # deep in the decel zone, nearly arrived
+        state._leg_start_y = 0
+        # even with the slider set low, the command can't drop into the dead zone
+        self.assertGreaterEqual(state.effective_speed_percent(30), config.MIN_DUTY_PERCENT)
 
     def test_effective_speed_is_full_in_the_middle_of_a_long_move(self):
         # once past the accel distance and still outside the decel distance

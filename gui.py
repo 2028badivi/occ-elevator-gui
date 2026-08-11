@@ -424,19 +424,22 @@ def text_size(value):
 # scale, used for BOTH axes - vertical positions, shaft width, car size, and
 # pulley size all come from real measured dimensions through the same
 # conversion, so everything on screen is genuinely proportional to the
-# physical rig instead of eyeballed. margins are from the CAD sketch: 18mm
-# of shaft below floor 1 and 43mm above floor 4, in a 95mm-wide interior.
-SHAFT_BOTTOM_MARGIN_MM = 18   # shaft continues this far below floor 1
+# physical rig instead of eyeballed. floor heights are measured from the
+# BOTTOM OF THE SHAFT (floor 1 = 0mm = the shaft bottom itself), so there is
+# no extra shaft below floor 1; 43mm of shaft continues above floor 4, in a
+# 95mm-wide interior.
+SHAFT_BOTTOM_MARGIN_MM = 0    # floor 1 sits at the very bottom of the shaft
 SHAFT_TOP_MARGIN_MM = 43      # shaft continues this far above the top floor
 SHAFT_INTERIOR_WIDTH_MM = 95  # real interior width of the shaft
 CAR_WIDTH_MM = 80             # display size of the car (approximate)
-CAR_HEIGHT_MM = 100           # display size of the car (approximate)
+CAR_HEIGHT_MM = 254           # real measured car height
 
-# state.car_y (and FLOOR_HEIGHTS_MM) mark a reference point ON the car body,
-# not one of its edges - confirmed by eye against the real rig as sitting a
-# little above the car's actual vertical middle. 0.0 would put the reference
+# state.car_y (and FLOOR_HEIGHTS_MM) mark a reference point ON the car body.
+# heights are measured from the shaft bottom and floor 1 (0mm) IS the shaft
+# bottom, so when the car is at floor 1 its BOTTOM rests at 0mm - the
+# reference point is the bottom edge of the car. 0.0 would put the reference
 # at the very top of the car, 1.0 at the very bottom, 0.5 dead center.
-CAR_FLOOR_REFERENCE_FRACTION = 0.4
+CAR_FLOOR_REFERENCE_FRACTION = 1.0
 
 SHAFT_TOP_DESIGN_Y = 40       # where the shaft interior starts on the design canvas
 SHAFT_BOTTOM_DESIGN_Y = 372   # where it ends (leaves room for the pulley above)
@@ -450,7 +453,7 @@ def mm_len(length_mm):
 
 
 def mm_to_design_y(height_mm):
-    """Maps a real-world height (mm, 0 at floor 1) onto the design canvas's y axis."""
+    """Maps a real-world height (mm, 0 at the shaft bottom) onto the design canvas's y axis."""
     return SHAFT_BOTTOM_DESIGN_Y - (height_mm + SHAFT_BOTTOM_MARGIN_MM) * MM_TO_DESIGN
 
 
