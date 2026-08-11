@@ -47,6 +47,16 @@ def _refresh_floor_buttons() -> None:
         _style_button(button, "primary" if is_target else "neutral")
 
 
+def _display_height_mm() -> float:
+    # what the height readouts and the drawn car use instead of raw car_y.
+    # during a bottom-homing leg the ESTIMATE deliberately runs below the
+    # floor-1 coordinate (see BOTTOM_HOMING_OVERDRIVE_MM in config.py) while
+    # the REAL car is resting on the physical shaft bottom - so for display,
+    # clamp at 0mm rather than showing the car sinking through the floor or
+    # a negative height.
+    return max(state.car_y, FLOOR_HEIGHTS_MM[1])
+
+
 def _apply_motion_command() -> tuple[int, float]:
     """Sends the exact command that the position estimator will integrate."""
     direction, duty_percent = state.motion_command(motor_speed)
@@ -167,7 +177,7 @@ def _update_top_bar() -> None:
     trip_part = f"   |   Trip {progress * 100:.0f}%" if progress is not None else ""
     top_status_label.value = (
         f"Floor {state.current_floor} -> {state.target_floor}"
-        f"   |   H {state.car_y:.0f}mm"
+        f"   |   H {_display_height_mm():.0f}mm"
         f"   |   v {abs(_velocity_mm_s):.0f}mm/s"
         f"{trip_part}"
         f"   |   Speed {motor_speed}%"
@@ -195,7 +205,7 @@ def draw_simulation() -> None:
     cx = 70  # horizontal center of the shaft on the design canvas
     # state.car_y (and FLOOR_HEIGHTS_MM) mark the car's bottom edge. The
     # reference fraction keeps that convention explicit in the draw math.
-    car_ref_y = mm_to_design_y(state.car_y)
+    car_ref_y = mm_to_design_y(_display_height_mm())
     car_half_w = mm_len(CAR_WIDTH_MM) / 2
     car_top_y = car_ref_y - mm_len(CAR_HEIGHT_MM * CAR_FLOOR_REFERENCE_FRACTION)
     car_bottom_y = car_ref_y + mm_len(CAR_HEIGHT_MM * (1 - CAR_FLOOR_REFERENCE_FRACTION))
@@ -224,7 +234,9 @@ def draw_simulation() -> None:
         sc(pulley_cx + pulley_r), sc(pulley_cy + pulley_r),
         color="#2a2a2a", outline=True, outline_color="#888888",
     )
-    pulley_angle = (state.car_y / PULLEY_CIRCUMFERENCE_MM) * 2 * math.pi
+    # clamped height here too: using raw car_y made the spokes visibly jump
+    # ~48 degrees in one frame when a homing arrival snapped -30mm back to 0
+    pulley_angle = (_display_height_mm() / PULLEY_CIRCUMFERENCE_MM) * 2 * math.pi
     for spoke_angle in (pulley_angle, pulley_angle + math.pi / 2):
         dx = pulley_r * math.cos(spoke_angle)
         dy = pulley_r * math.sin(spoke_angle)
@@ -245,7 +257,10 @@ def draw_simulation() -> None:
     # real distance too: within 40mm of the floor's actual height
     for floor_num, height_mm in FLOOR_HEIGHTS_MM.items():
         fy = mm_to_design_y(height_mm)
-        is_near = abs(state.car_y - height_mm) <= 40
+        # clamped height so the floor-1 beam stays lit through a homing dip
+        # regardless of how large BOTTOM_HOMING_OVERDRIVE_MM is tuned (with
+        # raw car_y it only stayed lit by coincidence of overdrive < 40)
+        is_near = abs(_display_height_mm() - height_mm) <= 40
         beam_color = "#00FF66" if is_near else "#442222"
         drawing.line(sc(shaft_left), sc(fy), sc(shaft_right), sc(fy), color=beam_color)
 
@@ -278,7 +293,7 @@ def draw_simulation() -> None:
     # live height/velocity readout in the bottom-right corner of the canvas,
     # in real physical units - this is the "millimeter coordinate system"
     # view of exactly where the car is and how fast it's moving
-    drawing.text(sc(116), sc(342), f"H: {state.car_y:.0f} mm", color="#9ad5e0", size=text_size(7))
+    drawing.text(sc(116), sc(342), f"H: {_display_height_mm():.0f} mm", color="#9ad5e0", size=text_size(7))
     drawing.text(sc(116), sc(358), f"v: {abs(_velocity_mm_s):.0f} mm/s", color="#9ad5e0", size=text_size(7))
 
 
@@ -315,9 +330,13 @@ def glide_step() -> None:
     hardware.update_floor_leds(state.current_floor)
     direction, duty_percent = _apply_motion_command()
 
-    previous_car_y = state.car_y
+    # velocity is derived from the CLAMPED display height, not raw car_y, so
+    # the readout agrees with the drawn car: during a homing overdrive the car
+    # is shown parked at floor 1 and v reads 0, instead of showing motion on a
+    # car that isn't moving on screen (the real car is resting on the stop)
+    previous_display_y = _display_height_mm()
     state.advance_from_command(direction, duty_percent, dt)
-    _velocity_mm_s = (state.car_y - previous_car_y) / dt if dt > 0 else 0.0
+    _velocity_mm_s = (_display_height_mm() - previous_display_y) / dt if dt > 0 else 0.0
 
     if state.has_arrived():
         # Stop in the same tick that the estimator reaches the floor. This is

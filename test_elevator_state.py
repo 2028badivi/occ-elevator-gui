@@ -312,6 +312,133 @@ class ElevatorStateTests(unittest.TestCase):
         self.assertFalse(state.stalled)
         self.assertIsNone(state.hardware_target_started_at)
 
+    def _run_until_arrived(self, state, speed=50, dt=0.02, ticks=40000):
+        # drives the motion_command/advance_from_command loop the same way
+        # glide_step() does, until the current leg reports arrival
+        for _ in range(ticks):
+            direction, duty = state.motion_command(speed)
+            state.advance_from_command(direction, duty, dt=dt)
+            if state.has_arrived():
+                return
+        self.fail("car never arrived within the tick budget")
+
+    def test_homing_leg_overdrives_below_floor1_then_anchors_to_zero(self):
+        # a leg into floor 1 must keep the motor commanded PAST the floor-1
+        # coordinate by the configured overdrive (so the real car actually
+        # settles on the physical shaft bottom), then anchor the estimate to
+        # exactly 0mm on arrival
+        state = ElevatorState()
+        state.calibrate_to_floor(2)
+        state.set_target(1)
+        lowest_commanded = state.car_y
+        for _ in range(40000):
+            direction, duty = state.motion_command(50)
+            state.advance_from_command(direction, duty, dt=0.02)
+            lowest_commanded = min(lowest_commanded, state.car_y)
+            if state.has_arrived():
+                break
+        self.assertTrue(state.has_arrived())
+        expected_overdrive_point = FLOOR_HEIGHTS_MM[1] - config.BOTTOM_HOMING_OVERDRIVE_MM
+        self.assertAlmostEqual(lowest_commanded, expected_overdrive_point, delta=ARRIVAL_TOLERANCE_MM)
+        self.assertTrue(state.on_arrival())
+        self.assertEqual(state.car_y, FLOOR_HEIGHTS_MM[1])
+        self.assertEqual(state.current_floor, 1)
+        # settled: reads as arrived at floor 1 and commands no further motion
+        self.assertTrue(state.has_arrived())
+        self.assertEqual(state.motion_command(50), (0, 0.0))
+
+    def test_pressing_floor1_while_anchored_at_floor1_is_a_noop(self):
+        # a parked car can't drift, so re-selecting floor 1 while already
+        # anchored there must NOT re-run the homing leg - each pointless
+        # overdrive would physically pay out slack cable against the stop
+        # (button spam used to inject ~30mm of slack per press)
+        state = ElevatorState()  # starts at floor 1, anchored at 0mm
+        state.set_target(1)
+        self.assertTrue(state.has_arrived())
+        self.assertEqual(state.motion_command(50), (0, 0.0))
+
+    def test_floor1_command_still_homes_when_not_anchored(self):
+        # the no-op guard must only apply when the car is truly anchored at
+        # 0mm - if the estimate says floor 1 but the height is off (e.g.
+        # after an e-stop nearby), a floor-1 command still runs a homing leg
+        state = ElevatorState()
+        state.current_floor = 1
+        state.car_y = 5.0  # believed near floor 1 but not anchored
+        state.set_target(1)
+        self.assertFalse(state.has_arrived())
+        self.assertEqual(state.direction_to_target(), -1)
+
+    def test_interrupting_a_homing_leg_clamps_the_estimate_to_the_shaft_bottom(self):
+        # pressing another floor mid-overdrive must not carry the physically
+        # impossible negative estimate into the new leg - that would
+        # over-command the trip by up to the overdrive (driving the real car
+        # past the top floor into the clearance)
+        state = ElevatorState()
+        state.calibrate_to_floor(2)
+        state.set_target(1)
+        for _ in range(40000):
+            direction, duty = state.motion_command(50)
+            state.advance_from_command(direction, duty, dt=0.02)
+            if state.car_y < -5.0:
+                break
+        self.assertLess(state.car_y, 0)  # mid-overdrive, below the floor-1 coordinate
+        state.set_target(4)  # interrupt the homing leg
+        self.assertEqual(state.car_y, FLOOR_HEIGHTS_MM[1])  # clamped back to the shaft bottom
+        self.assertEqual(state._leg_start_y, FLOOR_HEIGHTS_MM[1])
+
+    def test_sequence_starting_at_current_floor_mid_leg_does_not_deadlock(self):
+        # a sequence whose FIRST stop equals current_floor, started while a
+        # leg is in flight (e.g. during the demo's run up from floor 1), must
+        # still advance its queue when the car arrives back - the same-floor
+        # early return in on_arrival used to leave it stuck forever
+        state = ElevatorState()
+        state.start_demo()  # current stays 1, heading up to the top
+        state.car_y = 100.0  # mid-flight
+        state.start_sequence([1, 3])
+        self.assertEqual(state.target_floor, 1)
+        self.assertEqual(state.sequence_queue, [3])
+        self._run_until_arrived(state)
+        self.assertTrue(state.on_arrival())  # queue must advance despite current == target
+        self.assertEqual(state.car_y, FLOOR_HEIGHTS_MM[1])
+        self.assertEqual(state.target_floor, 3)
+        self.assertEqual(state.sequence_queue, [])
+        self.assertTrue(state.sequence_mode)
+
+    def test_demo_bounce_at_bottom_is_a_homing_leg(self):
+        # the demo loop's leg back down to floor 1 must home into the shaft
+        # bottom, so drift gets wiped once per demo cycle
+        state = ElevatorState()
+        state.start_demo()  # at floor 1 -> heads to the top first
+        state.car_y = FLOOR_HEIGHTS_MM[config.FLOOR_COUNT]
+        self.assertTrue(state.on_arrival())  # bounce: retargets floor 1
+        self.assertEqual(state.target_floor, 1)
+        state.resume_at = None  # skip the end-of-travel pause for the test
+        self._run_until_arrived(state)
+        self.assertLess(state.car_y, FLOOR_HEIGHTS_MM[1])  # parked at the overdrive point
+        self.assertTrue(state.on_arrival())
+        self.assertEqual(state.car_y, FLOOR_HEIGHTS_MM[1])  # anchored back to the true 0
+        self.assertEqual(state.target_floor, config.FLOOR_COUNT)  # bounced back up
+
+    def test_zero_overdrive_disables_homing(self):
+        with patch.object(config, "BOTTOM_HOMING_OVERDRIVE_MM", 0.0):
+            state = ElevatorState()
+            state.calibrate_to_floor(2)
+            state.set_target(1)
+            self._run_until_arrived(state)
+            # never commanded below the plain floor-1 coordinate
+            self.assertGreaterEqual(state.car_y, FLOOR_HEIGHTS_MM[1] - ARRIVAL_TOLERANCE_MM)
+
+    def test_emergency_stop_cancels_a_homing_leg(self):
+        # e-stop during a homing run must not leave the homing flag armed -
+        # nothing should keep (or resume) driving into the bottom afterwards
+        state = ElevatorState()
+        state.calibrate_to_floor(2)
+        state.set_target(1)
+        state.car_y = 10.0  # mid-homing, above the floor but heading down
+        state.cancel(state.nearest_floor_to_car())
+        self.assertTrue(state.has_arrived())
+        self.assertEqual(state.motion_command(50), (0, 0.0))
+
     def test_demo_pause_does_not_accumulate_simulated_motion(self):
         state = ElevatorState()
         state.start_demo()

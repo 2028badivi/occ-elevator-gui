@@ -69,6 +69,31 @@ DOWN_SPEED_SCALE = 1.0
 UP_PWM_DEADZONE_PERCENT = 0.0
 DOWN_PWM_DEADZONE_PERCENT = 0.0
 
+# --- Bottom homing ---
+# floor 1 IS the physical bottom of the shaft - a hard mechanical stop. that
+# makes it the one place the car's true position is knowable without any
+# sensor: drive down far enough and the car is definitely resting at 0mm.
+# So every leg that targets floor 1 deliberately overdrives its command by
+# this many mm past the floor-1 coordinate. If the real car was running
+# behind the estimate (the usual "stops just short of the bottom" error), the
+# extra travel closes the gap and the car settles on the physical stop; the
+# estimator then anchors itself to exactly 0mm on arrival. Any accumulated
+# open-loop drift is wiped out every time the car visits floor 1 - which the
+# 1<->4 demo loop does once per cycle. The overdrive happens inside the decel
+# ramp (at the slow end-of-trip speed), so worst case is a couple of seconds
+# of gentle pull against the stop / slack cable, not a slam.
+# Set to 0 to disable homing entirely.
+#
+# IMPORTANT once the drive is well calibrated: keep this no larger than the
+# real remaining "stops short of the bottom" gap. Any EXCESS overdrive pays
+# that much cable out against the stop on every floor-1 visit, and the next
+# upward leg spends the same distance winding the slack back in before the
+# car actually rises - the estimator can't see slack, so every following
+# floor lands that much low while the display still claims full height (and
+# on the endless demo loop the error compounds every cycle). Undersized is
+# safe (just corrects less per visit); oversized is not.
+BOTTOM_HOMING_OVERDRIVE_MM = 30.0
+
 # --- Safety ---
 # this is a safety net in case something breaks, like a sensor dying or a wire
 # coming loose. currently unused (there's no position sensor on the rig to

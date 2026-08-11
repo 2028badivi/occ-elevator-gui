@@ -69,6 +69,7 @@ class ElevatorState:
         self.stalled = False  # True if the motor appears stuck / not making progress
         self.demo_mode = False  # True while the 1<->4 demo loop is running
         self._leg_start_y = self.car_y  # where the current move began, for the accel/decel ramp
+        self._homing = False  # True while the current leg is a bottom-homing run into floor 1
 
     def is_paused(self) -> bool:
         # True during a brief pause (like waiting at a floor during a
@@ -81,6 +82,57 @@ class ElevatorState:
         self.hardware_target_started_at = None
         self.stalled = False
 
+    def _abort_homing(self) -> None:
+        # called before any NEW command replaces the current leg. if a homing
+        # leg was interrupted mid-overdrive, the estimate is parked below the
+        # floor-1 coordinate - physically impossible (the shaft bottom is a
+        # hard stop at 0mm) - and letting the next leg start from a negative
+        # estimate would over-command it by up to the overdrive distance
+        # (e.g. floor 4 would be overshot into the top clearance). clamp the
+        # estimate back to the shaft bottom before the new leg captures its
+        # starting point.
+        if self._homing:
+            self.car_y = max(self.car_y, FLOOR_HEIGHTS_MM[1])
+            self._homing = False
+
+    def _arm_homing(self) -> None:
+        # called whenever a NEW leg starts. floor 1 is the physical bottom of
+        # the shaft (a hard stop), so a leg into floor 1 becomes a homing run:
+        # the command deliberately overdrives past the floor-1 coordinate so
+        # the real car - which tends to run behind the estimate and stop short
+        # of the bottom - actually settles onto the physical stop. on_arrival()
+        # then anchors the estimator to exactly 0mm, wiping out any
+        # accumulated open-loop drift. see BOTTOM_HOMING_OVERDRIVE_MM in
+        # config.py (0 disables).
+        #
+        # EXCEPTION: if the car is already parked and anchored at floor 1, a
+        # fresh floor-1 command stays a no-op instead of re-running the homing
+        # leg. the car cannot drift while the motor is off, so re-homing from
+        # parked has no corrective value - and each pointless overdrive would
+        # physically pay out ~overdrive-worth of slack cable against the stop
+        # (spamming the Floor 1 button used to do exactly that, and the slack
+        # then silently ate the start of the next upward trip).
+        already_anchored = (
+            self.current_floor == 1
+            and abs(self.car_y - FLOOR_HEIGHTS_MM[1]) <= ARRIVAL_TOLERANCE_MM
+        )
+        self._homing = (
+            self.target_floor == 1
+            and config.BOTTOM_HOMING_OVERDRIVE_MM > 0
+            and not already_anchored
+        )
+
+    def _leg_target_y(self) -> float:
+        # where the CURRENT LEG is actually driving to. normally the target
+        # floor's coordinate, but a homing leg aims below floor 1 by the
+        # configured overdrive - the real car stops at the physical bottom
+        # partway through that extra distance, and on_arrival() snaps the
+        # estimate back to the true floor coordinate (0mm).
+        target_y = FLOOR_HEIGHTS_MM[self.target_floor]
+        if self._homing:
+            target_y -= config.BOTTOM_HOMING_OVERDRIVE_MM
+        return target_y
+
     def set_target(self, floor: int) -> None:
         # called when a floor is manually picked (like pressing a floor
         # button). cancels whatever sequence might have been running, since a
@@ -89,8 +141,10 @@ class ElevatorState:
         self.sequence_mode = False
         self.sequence_queue = []
         self.resume_at = None
+        self._abort_homing()  # never start the new leg from a mid-homing negative estimate
         self.target_floor = floor
         self._leg_start_y = self.car_y  # a fresh move starts here, for the accel ramp
+        self._arm_homing()
         self._clear_fault()
 
     def start_sequence(self, floors: list) -> None:
@@ -101,6 +155,7 @@ class ElevatorState:
         if not floors:
             return  # nothing was picked, so there's nothing to do
         self.demo_mode = False
+        self._abort_homing()  # never start the new leg from a mid-homing negative estimate
         ordered = sorted(set(floors))
         if self.has_arrived():
             ordered = [floor for floor in ordered if floor != self.current_floor]
@@ -113,6 +168,7 @@ class ElevatorState:
         self.sequence_queue = ordered[1:]  # save the rest for later
         self.sequence_mode = True
         self._leg_start_y = self.car_y
+        self._arm_homing()
         self._clear_fault()
 
     def start_demo(self) -> None:
@@ -126,10 +182,12 @@ class ElevatorState:
         self.sequence_queue = []
         self.demo_mode = True
         self.resume_at = None
+        self._abort_homing()  # never start the new leg from a mid-homing negative estimate
         bottom, top = 1, config.FLOOR_COUNT
         mid_y = (FLOOR_HEIGHTS_MM[bottom] + FLOOR_HEIGHTS_MM[top]) / 2
         self.target_floor = top if self.car_y <= mid_y else bottom
         self._leg_start_y = self.car_y
+        self._arm_homing()
         self._clear_fault()
 
     def stop_demo(self) -> None:
@@ -152,6 +210,7 @@ class ElevatorState:
         self.current_floor = floor
         self.target_floor = floor
         self._leg_start_y = self.car_y
+        self._homing = False  # "the car IS here" - no homing run, nothing should move
         self._clear_fault()
 
     def cancel(self, floor: int) -> None:
@@ -171,6 +230,7 @@ class ElevatorState:
         self.car_y = FLOOR_HEIGHTS_MM[floor]
         self.current_floor = floor
         self._leg_start_y = self.car_y
+        self._homing = False  # e-stop means STOP - never keep driving into the bottom
         self._clear_fault()
 
     def nearest_floor_to_car(self) -> int:
@@ -190,14 +250,17 @@ class ElevatorState:
         # frozen, injecting real movement that the estimator never counted.
         if self.is_paused() or self.has_arrived():
             return 0
-        target_y = FLOOR_HEIGHTS_MM[self.target_floor]
+        target_y = self._leg_target_y()
         return 1 if target_y > self.car_y else -1
 
     def has_arrived(self) -> bool:
-        # checks if the car is close enough to the target floor's position to
-        # count as "arrived" (millimeter-perfect accuracy isn't needed, being
-        # within the small numerical integration tolerance)
-        return abs(self.car_y - FLOOR_HEIGHTS_MM[self.target_floor]) <= ARRIVAL_TOLERANCE_MM
+        # checks if the car is close enough to the CURRENT LEG's destination
+        # to count as "arrived" (millimeter-perfect accuracy isn't needed,
+        # being within the small numerical integration tolerance). during a
+        # homing leg that destination is the overdrive point below floor 1,
+        # so the motor keeps driving until the extra travel is used up -
+        # on_arrival() then snaps the estimate back to the true 0mm.
+        return abs(self.car_y - self._leg_target_y()) <= ARRIVAL_TOLERANCE_MM
 
     def effective_speed_percent(self, speed_percent: int) -> float:
         # applies the accel/decel ramp on top of whatever speed was
@@ -209,7 +272,7 @@ class ElevatorState:
         # in gui.py.
         if speed_percent <= 0:
             return 0
-        target_y = FLOOR_HEIGHTS_MM[self.target_floor]
+        target_y = self._leg_target_y()
         distance_traveled = abs(self.car_y - self._leg_start_y)
         distance_remaining = abs(target_y - self.car_y)
         accel_fraction = min(1.0, distance_traveled / ACCEL_DISTANCE_MM)
@@ -261,7 +324,7 @@ class ElevatorState:
         """Integrates position from the exact command sent to the real motor."""
         if direction == 0 or duty_percent <= 0 or dt <= 0 or self.is_paused() or self.has_arrived():
             return
-        target_y = FLOOR_HEIGHTS_MM[self.target_floor]
+        target_y = self._leg_target_y()
         expected_direction = 1 if target_y > self.car_y else -1
         if direction != expected_direction:
             return
@@ -287,7 +350,7 @@ class ElevatorState:
         # how far through the current move the car is, as a 0.0-1.0 fraction
         # (None when there's no move in progress) - used by the GUI to show a
         # live "Trip 63%" readout
-        total = abs(FLOOR_HEIGHTS_MM[self.target_floor] - self._leg_start_y)
+        total = abs(self._leg_target_y() - self._leg_start_y)
         if total <= 0 or self.has_arrived():
             return None
         return min(1.0, abs(self.car_y - self._leg_start_y) / total)
@@ -300,29 +363,45 @@ class ElevatorState:
         #
         # returns True only the FIRST time a NEW floor is detected as reached,
         # so the caller knows something changed and the display should update.
-        if self.current_floor == self.target_floor:
-            return False  # already known to be here, nothing new happened
-        # Remove the numerical arrival tolerance before starting another leg.
-        # This keeps the estimator anchored to the known floor coordinates
-        # instead of carrying a rounding residue through every trip.
+        # Anchor to the true floor coordinate FIRST. This does two jobs:
+        # (a) removes the numerical arrival tolerance so no rounding residue
+        # is carried through every trip, and (b) ends a homing leg - the
+        # estimator is parked at the overdrive point below floor 1 while the
+        # real car rests on the physical shaft bottom, and both must come
+        # back to exactly 0mm.
+        self._homing = False
         self.car_y = FLOOR_HEIGHTS_MM[self.target_floor]
+        newly_arrived = self.current_floor != self.target_floor
         self.current_floor = self.target_floor
+        # The demo/sequence retargeting below must run even when the arrival
+        # is at the floor the car was already on (current == target). A
+        # sequence whose first stop equals the current floor used to hit an
+        # early return HERE, before the queue was ever popped - leaving
+        # sequence_mode stuck on with a dead car and the GUI saying
+        # "Running: [...]" forever.
+        advanced = False
         if self.demo_mode:
             # demo loop: bounce to the opposite end of the shaft after the
             # usual brief stop, forever (until something cancels demo_mode)
             self.target_floor = config.FLOOR_COUNT if self.current_floor == 1 else 1
             self._leg_start_y = self.car_y
+            self._arm_homing()  # the bounce down to floor 1 is a homing leg
             self.resume_at = time.monotonic() + SEQUENCE_STOP_PAUSE_SECONDS
+            advanced = True
         elif self.sequence_mode:
             if self.sequence_queue:
                 # more stops left, so grab the next one and pause briefly first
                 self.target_floor = self.sequence_queue.pop(0)
                 self._leg_start_y = self.car_y  # next stop is a fresh move, ramp from here
+                self._arm_homing()
                 self.resume_at = time.monotonic() + SEQUENCE_STOP_PAUSE_SECONDS
+                advanced = True
             else:
                 # that was the last stop, sequence is done
                 self.sequence_mode = False
-        return True
+        # True only when something the caller should react to happened: a NEW
+        # floor was reached, or the demo/sequence moved on to its next leg.
+        return newly_arrived or advanced
 
     def note_hardware_target(self, hardware_current_floor: int) -> bool:
         # this is the safety check for the REAL motor (not the simulated
