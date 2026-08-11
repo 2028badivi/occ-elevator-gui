@@ -56,17 +56,6 @@ MAX_PULLEY_RPM = MOTOR_RPM_BEFORE_GEARBOX / GEARBOX_RATIO
 UP_SPEED_SCALE = 1.0
 DOWN_SPEED_SCALE = 1.0
 
-# real DC motors also have a DEAD ZONE: below some PWM duty the motor hums or
-# stalls instead of turning, while the sim (speed proportional to duty) keeps
-# gliding - that mismatch is worst at the end of a trip, where the decel ramp
-# used to command as little as 15% OF THE SLIDER value (slider at 50% -> 7.5%
-# duty) and the real car quietly stopped short of the floor. this is an
-# ABSOLUTE duty floor: any nonzero move command is clamped up to at least
-# this many percent, keeping the real motor in the range where speed actually
-# tracks duty. raise it if the car still stalls short near floors; lower it
-# if arrivals overshoot / feel too fast at the very end.
-MIN_DUTY_PERCENT = 20
-
 # --- Safety ---
 # this is a safety net in case something breaks, like a sensor dying or a wire
 # coming loose. currently unused (there's no position sensor on the rig to

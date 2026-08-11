@@ -14,9 +14,8 @@ import time
 import config
 
 # real measured heights (in millimeters, from the actual rig), NOT arbitrary
-# pixel values - measured from the BOTTOM OF THE SHAFT (floor 1 sits at the
-# shaft bottom, so it's 0mm) and each floor above is 324mm higher, matching
-# the real shaft's equal floor-to-floor spacing
+# pixel values - floor 1 is the ground reference (0mm) and each floor above
+# it is 324mm higher, matching the real shaft's equal floor-to-floor spacing
 # (corrected from an earlier 254mm estimate). this lets the simulated car's
 # position stand in as a trustworthy proxy for the real car's position (e.g.
 # for testing without a position sensor wired up), since it's based on the
@@ -170,14 +169,7 @@ class ElevatorState:
         # -1 (down), or 0 if already there. this is the ONLY thing hardware.py
         # is told about position - there's no sensor on the rig to check this
         # against, so the simulated car_y here is the sole source of truth.
-        #
-        # 0 during a pause too: on_arrival() retargets the next stop (demo
-        # bounce / sequence) the same instant the car reaches a floor, so
-        # without this check the real motor would be commanded toward the new
-        # target for the whole 0.65s pause while the simulated car sits still -
-        # the motor never actually stopped at the end floors, and every pause
-        # injected ~10mm of real-vs-sim position error that compounded each loop.
-        if self.is_paused() or self.has_arrived():
+        if self.has_arrived():
             return 0
         target_y = FLOOR_HEIGHTS_MM[self.target_floor]
         return 1 if target_y > self.car_y else -1
@@ -204,13 +196,7 @@ class ElevatorState:
         accel_fraction = min(1.0, distance_traveled / ACCEL_DISTANCE_MM)
         decel_fraction = min(1.0, distance_remaining / DECEL_DISTANCE_MM)
         ramp_fraction = max(MIN_SPEED_FRACTION, min(accel_fraction, decel_fraction))
-        # clamp any nonzero command up to the motor's usable duty range
-        # (config.MIN_DUTY_PERCENT): below it the real motor stalls/hums while
-        # the sim would keep gliding, so the two would silently diverge right
-        # at the end of every trip - the exact "stops just short of the floor"
-        # failure. applied to the sim AND the real command alike (both go
-        # through this method), so they stay consistent.
-        return max(round(speed_percent * ramp_fraction), config.MIN_DUTY_PERCENT)
+        return round(speed_percent * ramp_fraction)
 
     def step_car(self, speed_percent: int, dt: float = 1.0 / 60.0) -> None:
         # advances the car by however far it could really travel in dt
